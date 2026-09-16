@@ -1,4 +1,4 @@
-# Build and publish the port-notes book.
+# Build and publish the scikit-image technical workbooks.
 #
 # Every target runs Python through the `$(PYTHON)` on PATH, never an absolute
 # interpreter path. In this directory `.python-version` makes pyenv resolve
@@ -42,7 +42,8 @@ $(ZINGL_BIN): $(FIXTURES_DIR)/zingl_line3d.c
 
 html: kernel $(ZINGL_BIN)
 	# Check for ipynb files in source (should all be paired .md).
-	if compgen -G "*.ipynb" 2> /dev/null; then (echo "ipynb files" && exit 1); fi
+	if compgen -G "notebooks/*.ipynb" 2> /dev/null; then \
+	  (echo "ipynb files" && exit 1); fi
 	$(MYST) build --html --strict --execute
 
 github-pages:
@@ -59,4 +60,4 @@ clean: rm-ipynb
 	rm -f $(ZINGL_BIN)
 
 rm-ipynb:
-	rm -rf *.ipynb
+	rm -rf notebooks/*.ipynb

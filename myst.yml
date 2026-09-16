@@ -1,9 +1,9 @@
 version: 1
 project:
-  title: Port notes for scikit-image 1 to 2
+  title: scikit-image technical workbooks
   authors:
     - name: Matthew Brett
-  github: https://github.com/matthew-brett/scikit-image
+  github: https://github.com/scikit-image/skimage-workbooks
   execute:
     cache: true
   toc:

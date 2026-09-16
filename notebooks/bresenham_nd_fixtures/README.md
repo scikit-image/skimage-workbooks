@@ -4,7 +4,7 @@ Generated against `_bresenham_nd` in the `bresenham-nd` worktree.
 
 ## Regenerate
 
-From `port-notes` (or any cwd), with the `bresenham-nd` env and build on
+From the `notebooks` directory, with the `bresenham-nd` env and build on
 the path:
 
 ```bash

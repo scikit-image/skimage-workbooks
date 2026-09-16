@@ -544,10 +544,12 @@ shows one combination failing silently rather than raising.
 
 Dispatching on type rather than on shape removes the sniffing: a transform
 object and a coordinate array are told apart by what they are, not by their
-dimensions. That is Option A in `coordinate_port_plan.md` section 11.4, which
-also covers what to do with the bare matrix and the callable. Field usage of
-the four kinds is measured in section 10.2 of that document; this notebook does
-not re-derive it.
+dimensions. That is Option A in section 11.4 of `coordinate_port_plan.md`, in
+the separate [port-notes`
+repository](https://github.com/matthew-brett/port-notes), which also covers
+what to do with the bare matrix and the callable. Field usage of the four
+kinds is measured in section 10.2 of that document; this notebook does not
+re-derive it.
 
 The axis-order split is the one item that the coordinate port fixes on its own:
 once callables receive array-order coordinates, the callable and the array

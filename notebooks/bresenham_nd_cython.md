@@ -42,12 +42,19 @@ from matplotlib.colors import ListedColormap
 # Subject under test: local Cython module (no worktree / _skimage2 needed).
 import pyximport
 
-_ROOT = Path.cwd()
-_PYX = _ROOT / "bresenham_nd_local" / "_bresenham.pyx"
-if not _PYX.is_file():
+def _find_root():
+    """Directory holding `bresenham_nd_local`, whatever the working dir is."""
+    for base in (Path.cwd(), *Path.cwd().parents):
+        for candidate in (base, base / "notebooks"):
+            if (candidate / "bresenham_nd_local" / "_bresenham.pyx").is_file():
+                return candidate
     raise FileNotFoundError(
-        f"expected {_PYX}; run this notebook from the port-notes directory"
+        "cannot find bresenham_nd_local/_bresenham.pyx; run this notebook "
+        "from a checkout of the skimage-workbooks repository"
     )
+
+
+_ROOT = _find_root()
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 

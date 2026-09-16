@@ -1,4 +1,4 @@
-# Build requirements for the port-notes book.
+# Build requirements for the scikit-image technical workbooks.
 mystmd
 ipykernel
 jupyter-server
