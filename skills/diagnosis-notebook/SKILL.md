@@ -126,7 +126,8 @@ nothing to say.
 - Put helpers in their own section with a one-line docstring each. Everything
   after should be built from them.
 - Prose between cells says what the reader is about to see and what it means.
-  A cell with no lead-in is a cell the reader skips.
+  A cell with no lead-in is a cell the reader skips. Write it in the plain
+  style of section 16.
 - You can be relatively liberal using comments in notebook code.  Shorter is
   generally better.  If you're explaining code rather than ideas, it is OK to have a longer comment.
 - If outputing a *table*, rather than raw code 
@@ -303,3 +304,49 @@ including plans and reviews, not only to notebooks.
 - As you write the notebook, I will give you feedback.
 - When the feedback is me asking for more explanation, there is no need to
   refer to my question, or your previous answer, in your explanation, when writing to the notebook.  Refer to my question and the previous answer in your model output in the UI, but not in the notebook.
+
+## 16. Prose style
+
+Write in ASD-STE100 Simplified Technical English. Short sentences, one idea in
+each. Active voice, present tense. One term for one concept, used again and
+again — do not change the word to make the paragraph more elegant.
+
+The failure to guard against is fluff: prose that describes the document, or
+announces the value of what comes next, instead of saying the thing. It reads
+as fluent, it survives review, and it carries no information.
+
+**Do not announce.** Delete any sentence whose job is to tell the reader that
+the next sentence is worth reading.
+
+| no | yes |
+| --- | --- |
+| "Worth seeing rather than asserting. Three pixels of one scene:" | "Three pixels of one scene:" |
+| "which is worth checking rather than taking on trust" | "Check it:" |
+| "Everything below is about eigenvalues of the Hessian, and it is worth being precise about what matrix that is" | "The eigenvalues are those of one matrix per pixel." |
+| "The step that makes α intelligible is in the appendix." | "The appendix gives the step:" |
+
+**Do not describe the document.** The reader can see its shape. An
+introduction states the question and the convention, in two or three sentences,
+and stops. It does not list the sections, explain what each one contributes, or
+rank itself against another notebook. A cross-reference gives the section and
+what is there, and nothing else: "`on_meijering.md` §5.2a measures the cost on
+test images" — not "…and is the place for the defect argument; this notebook is
+the explanation behind it."
+
+**Do not grade your sources.** Cite and quote. "Lindeberg's §5.6.2 puts it
+plainly" tells the reader about Lindeberg's writing; delete the praise and keep
+the quotation, which does the work.
+
+**Ban these openers:** *it is worth noting*, *note that*, *in fact*, *of
+course*, *simply*, *just*, *interestingly*, *importantly*, *the key insight is*,
+*what is left is*, *which makes it*. Each one is either empty or is doing a job
+the following clause already does.
+
+**Avoid rhetorical shape.** No triples for rhythm ("three images, three
+different lies"), no one-line paragraph landed for effect, no metaphor where a
+plain name exists. A figure of speech that names a real property once is
+acceptable; repeating it as if it were terminology is not.
+
+**The test.** Delete the sentence and read the paragraph again. If nothing is
+lost, it was fluff. Run this over the whole draft, in the same pass as
+section 14.
