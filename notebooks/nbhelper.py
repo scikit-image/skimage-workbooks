@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Hashable, Sequence
 
 import pandas as pd
-from IPython.display import Markdown, display
+from IPython.display import display
 
 IndexArg = bool | str | Hashable | Sequence[Hashable] | None
 
@@ -40,10 +40,12 @@ def _markdown_safe_frame(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def show_table(df: pd.DataFrame, index: IndexArg = None, **kwargs):
-    """Render a DataFrame as a Markdown table (keeps formatting in HTML and PDF).
+    """Render a DataFrame as a table, in HTML, Markdown and plain text.
 
-    Bare DataFrame outputs use ``text/html`` / ``text/plain``; PDF builders fall
-    back to the monospace plain-text repr. Markdown tables survive both.
+    All three come from the same tabulate call, so the formatting agrees.
+    mystmd does not parse a ``text/markdown`` output into its document tree, so
+    a Markdown table reaches the web page as literal text; it renders the
+    ``text/html`` output instead. PDF builders fall back to the plain text.
 
     ``index`` selects the row index and whether to print it:
 
@@ -52,8 +54,8 @@ def show_table(df: pd.DataFrame, index: IndexArg = None, **kwargs):
     - ``True`` / ``False``: force showing or hiding the current index.
     - column label or list of labels: ``set_index`` those columns, then show.
 
-    ASCII ``|`` in headers or cells is rewritten to U+2223 (∣) so Markdown
-    table parsers do not treat it as a column separator.
+    In the Markdown table only, ASCII ``|`` in headers or cells is rewritten to
+    U+2223 (∣) so table parsers do not treat it as a column separator.
 
     Extra ``kwargs`` go to ``DataFrame.to_markdown`` (e.g. ``floatfmt``).
     """
@@ -62,4 +64,11 @@ def show_table(df: pd.DataFrame, index: IndexArg = None, **kwargs):
         index = True
     elif index is None:
         index = df.index.name is not None or not isinstance(df.index, pd.RangeIndex)
-    display(Markdown(_markdown_safe_frame(df).to_markdown(index=index, **kwargs)))
+    display(
+        {
+            "text/html": df.to_markdown(index=index, tablefmt="html", **kwargs),
+            "text/markdown": _markdown_safe_frame(df).to_markdown(index=index, **kwargs),
+            "text/plain": df.to_markdown(index=index, tablefmt="simple", **kwargs),
+        },
+        raw=True,
+    )
