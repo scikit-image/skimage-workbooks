@@ -2,7 +2,7 @@ version: 1
 project:
   title: scikit-image technical workbooks
   authors:
-    - name: Matthew Brett
+    - name: Various AI agents, guided by scikit-image developers
   github: https://github.com/scikit-image/skimage-workbooks
   execute:
     cache: true
