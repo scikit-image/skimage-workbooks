@@ -9,15 +9,11 @@ from IPython.display import display
 
 IndexArg = bool | str | Hashable | Sequence[Hashable] | None
 
-# ASCII | is the Markdown table delimiter; ∣ (U+2223 DIVIDES) looks the same.
-_MD_PIPE = "|"
-_MD_PIPE_GLYPH = "\u2223"
-
 
 def _markdown_safe_value(value):
-    """Replace Markdown table separators in labels/cells; leave other values."""
+    """Guard Markdown table separators in labels/cells; leave other values."""
     if isinstance(value, str):
-        return value.replace(_MD_PIPE, _MD_PIPE_GLYPH)
+        return value.replace('|', '$|$')
     if isinstance(value, tuple):
         return tuple(_markdown_safe_value(v) for v in value)
     return value
@@ -54,8 +50,8 @@ def show_table(df: pd.DataFrame, index: IndexArg = None, **kwargs):
     - ``True`` / ``False``: force showing or hiding the current index.
     - column label or list of labels: ``set_index`` those columns, then show.
 
-    In the Markdown table only, ASCII ``|`` in headers or cells is rewritten to
-    U+2223 (∣) so table parsers do not treat it as a column separator.
+    Wrap ``|`` in headers as $|$ so that table parsers do not treat it as a
+    column separator.
 
     Extra ``kwargs`` go to ``DataFrame.to_markdown`` (e.g. ``floatfmt``).
     """
