@@ -20,11 +20,9 @@ it to `1 / (ndim + 1)`. [Meijering *et al.*
 (2004)](https://doi.org/10.1002/cyto.a.20022) derive the value $-1/3$ for 2-D.
 The docstring says $-1/(\mathrm{ndim}+1)$. The code says $+1/(\mathrm{ndim}+1)$.
 
-This notebook explains what α is, where $-1/3$ comes from, and what the sign
-does — the paper's derivation worked through, its figure reproduced, and the
-scikit-image implementation read against it. `on_meijering.md` §5.2a measures
-what the sign costs on test images and is the place for the defect argument;
-this notebook is the explanation behind it.
+This notebook works through the paper's derivation, reproduces its figure, and
+compares the scikit-image implementation with it. `on_meijering.md` §5.2a
+measures what the sign costs on test images.
 
 Coordinates are in array order. Throughout, $u$ is the direction **across** a
 ridge and $v$ the direction **along** it.
@@ -85,10 +83,10 @@ def recede(ax, title=None):
 
 A second-order ridge detector asks whether the image curves sharply in one
 direction and hardly at all in the perpendicular one. The natural quantity is
-the Hessian's larger-magnitude eigenvalue, and the trouble is that it does not
-distinguish a ridge from anything else that curves. Lindeberg's §5.6.2 puts it
-plainly: the plain principal-curvature measure "give[s] strong responses at
-edges" and "comparably strong blob responses".
+the Hessian's larger-magnitude eigenvalue. It does not distinguish a ridge from
+anything else that curves. Lindeberg's §5.6.2: the plain principal-curvature
+measure "give[s] strong responses at edges" and "comparably strong blob
+responses".
 
 So the eigenvalues need reshaping before they are read as a ridge score. That
 reshaping is α.
@@ -112,7 +110,190 @@ fig.suptitle("three bright structures; only the first is a ridge", y=1.04)
 fig.tight_layout()
 ```
 
-## 2. The modified Hessian
+## 2. Where the eigenvalues come from
+
+The filter reads the eigenvalues of the Hessian. The usual reading of
+$Ax = \lambda x$ does not obviously apply to an image, so this section says what
+that matrix is and what it acts on.
+
+`hessian_matrix` convolves the image with the second derivatives of a Gaussian
+of width σ and returns the upper-triangular entries — in array order
+$f_{rr}$, $f_{rc}$, $f_{cc}$ — as three arrays the size of the image. At one
+pixel $p$ those three numbers are one symmetric $2 \times 2$ matrix
+
+$$
+H_f(p) = \begin{pmatrix} f_{rr}(p) & f_{rc}(p) \\
+                         f_{rc}(p) & f_{cc}(p) \end{pmatrix},
+$$
+
+so the Hessian is one matrix **per pixel**: a tensor field, a value attached to
+every point. Each matrix summarises a neighbourhood of size σ, and has its own
+two eigenvalues. That is the sense in which the eigenvalues are localized.
+
+The table gives the matrix and its eigenvalues at three pixels of one scene.
+
+```{code-cell} ipython3
+TILT = 30.0
+across = ((rows - MID) * np.sin(np.deg2rad(TILT))
+          + (cols - 45) * np.cos(np.deg2rad(TILT)))
+scene = (np.exp(-(across**2) / (2 * WIDTH**2))
+         + np.exp(-((rows - 55) ** 2 + (cols - 115) ** 2) / (2 * WIDTH**2)))
+
+PROBES = {"ridge crest": (MID, 45), "ridge flank": (54, 70),
+          "blob centre": (55, 115)}
+elements = hessian_matrix(scene, SIGMA, mode="nearest",
+                          use_gaussian_derivatives=True)
+
+
+def hessian_at(pixel):
+    """The 2x2 matrix at one pixel, with its eigenvalues and eigenvectors."""
+    f_rr, f_rc, f_cc = (element[pixel] for element in elements)
+    matrix = np.array([[f_rr, f_rc], [f_rc, f_cc]])
+    values, directions = np.linalg.eigh(matrix)
+    order = abs(values).argsort()[::-1]        # largest magnitude first
+    return matrix, values[order], directions[:, order]
+
+
+rows_probe = []
+for name, pixel in PROBES.items():
+    matrix, values, _ = hessian_at(pixel)
+    rows_probe.append({
+        "structure": name, "pixel": str(pixel),
+        "f_rr": round(matrix[0, 0], 5), "f_rc": round(matrix[0, 1], 5),
+        "f_cc": round(matrix[1, 1], 5),
+        "λ, larger |·|": round(values[0], 5),
+        "λ, smaller |·|": round(values[1], 5),
+    })
+show_table(pd.DataFrame(rows_probe), index="structure")
+```
+
+The crest has one non-zero curvature and one that vanishes. The flank has the
+same shape with the opposite sign, because the intensity there curves upward
+across the ridge. The blob centre curves equally in every direction, so its two
+eigenvalues are the same number.
+
+The next figure draws each eigenvector at the pixel it belongs to, scaled by its
+eigenvalue.
+
+```{code-cell} ipython3
+LABEL_AT = {"ridge crest": (-26, -20, "right"),
+            "ridge flank": (22, 8, "left"),
+            "blob centre": (-30, 0, "center")}
+
+fig, ax = plt.subplots(figsize=(5.2, 5.2))
+bare(ax)
+ax.imshow(scene, cmap="gray")
+
+longest = max(abs(hessian_at(pixel)[1]).max() for pixel in PROBES.values())
+for name, pixel in PROBES.items():
+    _, values, directions = hessian_at(pixel)
+    for value, direction in zip(values, directions.T):
+        offset = direction * 20 * abs(value) / longest   # array order: (row, col)
+        ax.annotate("", (pixel[1] + offset[1], pixel[0] + offset[0]),
+                    (pixel[1] - offset[1], pixel[0] - offset[0]),
+                    arrowprops=dict(arrowstyle="<->", lw=1.6, shrinkA=0, shrinkB=0,
+                                    color=C_TWO if value < 0 else C_ONE))
+    ax.plot(*pixel[::-1], "o", color="white", ms=4, mec=INK, mew=0.8)
+    d_row, d_col, align = LABEL_AT[name]
+    ax.annotate(name, (pixel[1] + d_col, pixel[0] + d_row), fontsize=7.5,
+                color="white", ha=align, va="center")
+ax.set_title("eigenvectors at three pixels, scaled by |λ|;\n"
+             "orange negative curvature, blue positive", color=MUTED)
+fig.tight_layout()
+```
+
+At the crest the long orange arrow points across the ridge and the short one
+along it — the vanishing eigenvalue has no arrow to speak of. At the blob the
+two arrows are equal and the axes are arbitrary, which is what a repeated
+eigenvalue means: every direction is an eigenvector.
+
+The vector such a matrix acts on is a **direction in the image plane**, of
+length `ndim`, not the image. For a unit direction $w$,
+
+$$
+\kappa(w) = w^{\mathsf T} H_f(p)\, w
+$$
+
+is the curvature of the smoothed intensity surface along $w$. Turn $w$ through
+all directions and $\kappa$ traces out a curve with a largest and a smallest
+value. Those two directions are exactly the eigenvectors of $H_f(p)$, and the
+curvatures they attain are the eigenvalues. This is the ordinary eigenvalue
+problem, with $x$ a direction vector — nothing acts on the image as a vector.
+
+A ridge tilted off the grid axes has all three entries non-zero. Take the crest
+and compute its eigenvalues three ways:
+
+```{code-cell} ipython3
+CREST = PROBES["ridge crest"]
+H, values, vectors = hessian_at(CREST)
+
+half_trace = (H[0, 0] + H[1, 1]) / 2
+half_root = np.sqrt(H[0, 1] ** 2 + ((H[0, 0] - H[1, 1]) / 2) ** 2)
+
+print("H at the ridge crest:\n", H)
+print(f"\nnp.linalg.eigh : {values}")
+print(f"skimage        : {hessian_matrix_eigvals(elements)[:, CREST[0], CREST[1]]}")
+print(f"closed form    : [{half_trace - half_root:+.6f} {half_trace + half_root:+.6f}]")
+print(f"eigenvector angles from the column axis: "
+      f"{np.rad2deg(np.arctan2(vectors[0], vectors[1])).round(3)}  (ridge at {TILT}°)")
+```
+
+The eigenvector of the non-zero eigenvalue points at 30°, across the ridge; the
+other, at −60°, runs along it and reports zero curvature. The three routes agree
+on the pair. Only the order differs. Those are the
+notebook's $u$ and $v$, and $\lambda_i = v_i^{\mathsf T} H_f v_i$ — used in §4 —
+is just $\kappa$ read in one of those two directions.
+
+```{code-cell} ipython3
+angles = np.linspace(-90, 90, 361)
+direction = np.stack([np.sin(np.deg2rad(angles)), np.cos(np.deg2rad(angles))])
+curvature = np.einsum("in,ij,jn->n", direction, H, direction)
+
+fig, ax = plt.subplots(figsize=(6.4, 3.0))
+ax.plot(angles, curvature, color=C_ONE, lw=1.8)
+for value, colour, label in ((values[0], C_TWO, "across the ridge"),
+                             (values[1], C_THREE, "along the ridge")):
+    ax.axhline(value, color=colour, lw=1.0, ls="--")
+    ax.annotate(f"λ = {0.0 if abs(value) < 1e-12 else value:+.3f}, {label}",
+                (-88, value), fontsize=7.5,
+                color=MUTED, va="bottom")
+recede(ax, r"directional curvature $w^\top H_f w$ at one pixel")
+ax.set_xlabel("direction of $w$, degrees from the column axis", fontsize=8,
+              color=MUTED)
+ax.set_xticks([-90, -60, -30, 0, 30, 60, 90])
+fig.tight_layout()
+```
+
+The two eigenvalues are the largest and smallest values of that curve, nothing
+more.
+
+scikit-image computes them for every pixel at once. In 2-D it uses the closed
+form above, vectorised over the whole array:
+
+```python
+eigs[:] = (M00 + M11) / 2
+hsqrtdet = np.sqrt(M01**2 + ((M00 - M11) / 2) ** 2)
+eigs[0] += hsqrtdet
+eigs[1] -= hsqrtdet
+```
+
+that is $\lambda_\pm = \tfrac12\operatorname{tr} H_f \pm
+\sqrt{\bigl(\tfrac{f_{rr} - f_{cc}}{2}\bigr)^2 + f_{rc}^2}$. Above 2-D it
+assembles the full symmetric matrix per pixel and calls `np.linalg.eigvalsh`
+batched over the pixel axes. Either way the result has shape
+`(ndim, *image.shape)`, the eigenvalue index leading.
+
+```{code-cell} ipython3
+print(f"one image of shape {scene.shape} gives eigenvalues of shape "
+      f"{hessian_matrix_eigvals(elements).shape}")
+```
+
+The eigenvalues come back sorted by **signed** value, largest first, so the
+index does not track a fixed geometric role from pixel to pixel. Whatever wants
+"the principal curvature" must select by magnitude itself, which is what
+`meijering` does with `abs(vals).argmax(0)` in §8.
+
+## 3. The modified Hessian
 
 The paper does not reshape the image or the filter directly. It reshapes the
 **matrix** whose eigenvalues are taken. In place of the Hessian $H_f$ it uses
@@ -141,7 +322,7 @@ mtx = linalg.circulant([1, *[alpha] * (image.ndim - 1)])
 vals = np.tensordot(mtx, eigvals, 1)
 ```
 
-which is worth checking rather than taking on trust, in 2-D and above.
+Check that against the formula, in 2-D and above.
 
 ```{code-cell} ipython3
 def modified(eigvals, alpha):
@@ -161,16 +342,21 @@ for ndim in (2, 3, 4):
 show_table(pd.DataFrame(checks), index="ndim")
 ```
 
-## 3. The filter hiding behind the eigenvalue
+## 4. The filter hiding behind the eigenvalue
 
-The step that makes α intelligible is in the appendix. Because
-$\lambda_i = v_i^{\mathsf T} H_f v_i$ and that equals $f * (v_i \cdot \nabla)^2 G$,
-the *modified* eigenvalue is also a convolution — with a reshaped kernel:
+The appendix of the paper gives the step. $\lambda_i = v_i^{\mathsf T} H_f v_i$,
+and that equals $f * (v_i \cdot \nabla)^2 G$. Read as a function of position, the
+*modified* eigenvalue is therefore the output of one convolution, with a
+reshaped kernel:
 
 $$
 \lambda'_i = f * h'_i, \qquad
 h' = \bigl\{ (r \cdot \nabla)^2 + \alpha (r_\perp \cdot \nabla)^2 \bigr\} G .
 $$
+
+Here $\lambda'_i$ is the whole eigenvalue image, not the number at one pixel, and
+$r$ is the direction that fixes the kernel. Where the ridge direction changes
+across the image, the kernel must turn with it.
 
 So α does not merely rescale a number. It picks a **filter**. Writing $u$ for
 the direction $r$ and $v$ for $r_\perp$, and using $G = g(u)g(v)$,
@@ -228,8 +414,8 @@ show_table(
 )
 ```
 
-The two routes agree to floating point. What is left is kernel truncation, and
-nothing else — widen the kernel and it goes away.
+The two routes agree to floating point. The remaining difference is kernel
+truncation: widen the kernel and it goes away.
 
 ```{code-cell} ipython3
 show_table(
@@ -245,9 +431,9 @@ show_table(
 So α is a knob on the shape of a filter, and the rest of this notebook is about
 what that shape looks like.
 
-## 4. The shape α selects
+## 5. The shape α selects
 
-Which makes it something we can look at. This is the paper's Figure 5, whose
+The filter can therefore be drawn. This is the paper's Figure 5, whose
 caption notes the filter "is more elongated than the filter normally found in
 the literature on detection of line-like structures" — that literature being
 $G_{uu}$ alone, which is α = 0.
@@ -273,9 +459,9 @@ negative core is a closed ellipse — a *blob* detector. At $0$ it is a bar. At
 $-1/3$ it is longer still, the zero contour bending away from the axis. At
 $-1$ the core has split in two and the centre of the filter carries no weight
 at all, because $h'(0,0) \propto -(1+\alpha)$ vanishes there — tabulated in
-§6.1.
+§7.1.
 
-## 5. Where −1/3 comes from
+## 6. Where −1/3 comes from
 
 The paper's criterion is that $h'$ be "maximally flat in its longitudinal
 direction", written
@@ -319,7 +505,7 @@ show_table(
 )
 ```
 
-Drawn, the criterion is the flatness of one curve at one point.
+The criterion is the flatness of one curve at one point.
 
 ```{code-cell} ipython3
 fig, axes = plt.subplots(1, 2, figsize=(10.4, 3.0))
@@ -378,7 +564,7 @@ show_table(
 )
 ```
 
-## 6. What α does to a ridge, a blob and an edge
+## 7. What α does to a ridge, a blob and an edge
 
 The shape argument predicts the behaviour. A ridge has one vanishing principal
 curvature, so $\lambda = (0, \lambda)$ and
@@ -436,7 +622,7 @@ $|(1 + \tfrac13)/(1 - \tfrac13)| = 2$.
 
 +++
 
-### 6.1 Why not α = −1?
+### 7.1 Why not α = −1?
 
 The blob response is exactly zero at $\alpha = -1$, where
 $\lambda' = \lambda(1-1)$, and the ridge response is untouched. On this
@@ -465,13 +651,12 @@ away from zero.
 
 +++
 
-### 6.2 Off the grid axes
+### 7.2 Off the grid axes
 
-The structures in §6 run along the array axes, and the Hessian is computed with
+The structures in §7 run along the array axes, and the Hessian is computed with
 axis-aligned separable filters. The argument for α-invariance is about
-*eigenvalues*, which do not care how the image is oriented — but the discrete
-operator might. So the claim is worth re-running at angles the grid does not
-favour.
+*eigenvalues*, which are independent of the image orientation. The discrete
+operator is not. Re-run the claim at angles the grid does not favour.
 
 Build each structure as an exact function of one linear coordinate
 $d = (r - r_0)\sin\theta + (c - c_0)\cos\theta$: a Gaussian ridge in $d$, and
@@ -548,9 +733,8 @@ and the response is the same number for every α — `0.0e+00` spread, not a sma
 one. The response magnitude does not move with angle either. α-invariance is
 not an artefact of axis alignment.
 
-The third row of each block is a control, and it is the useful one for anybody
-writing rotated fixtures. The *same* edge built by thresholding `d >= 0` and
-blurring is not a function of $d$: the threshold staircases along the boundary,
+The third row of each block is a control. The *same* edge built by thresholding
+`d >= 0` and blurring is not a function of $d$: the threshold staircases along the boundary,
 which leaves a real second curvature behind, and the invariance breaks at the
 percent level. Nothing is wrong with the filter there — the test image is not
 the structure it was meant to be.
@@ -566,12 +750,12 @@ for kind, value in worst.items():
     print(f"  {kind:<20}{value:.1e}")
 ```
 
-A blob has no orientation to vary, so §6's $|1+\alpha|$ law needs no rotated
+A blob has no orientation to vary, so §7's $|1+\alpha|$ law needs no rotated
 counterpart. What the two together say is that α reaches a structure only
 through the product of its two principal curvatures being non-zero, whatever
 angle that structure sits at.
 
-## 7. What scikit-image does
+## 8. What scikit-image does
 
 The implementation follows the paper closely, with one difference.
 
@@ -585,13 +769,13 @@ vals = np.take_along_axis(vals, abs(vals).argmax(0)[None], 0).squeeze(0)
 vals = np.maximum(vals, 0)                                # drop wrong polarity
 ```
 
-The circulant is §2's $\lambda'_i = \lambda_i + \alpha\sum_{j\neq i}\lambda_j$,
+The circulant is §3's $\lambda'_i = \lambda_i + \alpha\sum_{j\neq i}\lambda_j$,
 verified above. Taking the largest magnitude is the paper's "λ is the larger in
 magnitude of the two eigenvalues", and the clip is its "dark line-like
 structures, for which λ ≥ 0, are ignored" — after `black_ridges` has negated
 the image, if asked.
 
-The magnitude $1/(\mathrm{ndim}+1)$ is §5's generalisation. The sign is not the
+The magnitude $1/(\mathrm{ndim}+1)$ is §6's generalisation. The sign is not the
 paper's, and not the docstring's either:
 
 ```{code-cell} ipython3
@@ -616,7 +800,7 @@ $+1/(\mathrm{ndim}+1)$ points the blob dial the wrong way: it turns a
 suppressor into an amplifier, and answers none of the objection α exists to
 answer.
 
-## 8. How to test α
+## 9. How to test α
 
 Everything above is also a set of instructions for writing a regression test,
 and most of the ways such a test goes wrong are ways of accidentally testing
@@ -673,9 +857,9 @@ for label, (scene, probe, sigma) in scenes.items():
 show_table(pd.DataFrame(rows_pin), index="image")
 ```
 
-Three images, three different lies. In the first the probe ridge reads 1.0
-under both signs, because it set the divisor both times: the assertion passes
-and means nothing. In the second the maximum moves from the ridge to the blob
+Each of the three images misleads in a different way. In the first the probe
+ridge reads 1.0 under both signs, because it set the divisor both times: the
+assertion passes and means nothing. In the second the maximum moves from the ridge to the blob
 when α flips, so the probe appears to change by 6% — a difference entirely
 manufactured by the normalisation. Only in the third, where a brighter
 reference ridge owns the maximum under both signs, is the probe free to move;
@@ -685,7 +869,7 @@ Either put a dominant reference structure in the frame, or assert on a ratio of
 two probes, or bypass the normalisation and work with the modified eigenvalues
 directly as this notebook does.
 
-**Use structures that are exact functions of one coordinate.** §6.2 is the
+**Use structures that are exact functions of one coordinate.** §7.2 is the
 warning: the invariance belongs to structures whose Hessian is genuinely rank
 one, and a rotated edge built by thresholding is not one of those. Build ridges
 as $\exp(-d^2/2w^2)$ and edges as $\operatorname{erf}(d/w\sqrt2)$, with $d$
@@ -763,32 +947,33 @@ These are the checks in `../meijering-alpha-fix`:
 `test_meijering_default_alpha_is_documented_value` is the parametrised
 dimension check.
 
-## 9. Summary
+## 10. Summary
 
 | question | answer | where |
 | --- | --- | --- |
-| what is α? | the mixing constant in $\lambda'_i = \lambda_i + \alpha\sum_{j\neq i}\lambda_j$ | §2 |
-| what does it change? | the *shape* of the filter $h' = \{(r\cdot\nabla)^2 + \alpha(r_\perp\cdot\nabla)^2\}G$, since $\lambda'_i = f * h'_i$ | §3, §4 |
-| why −1/3? | it is the unique α making $h'$ flat along the ridge at the origin, $(1+3\alpha) = 0$ | §5 |
-| in n dimensions? | $1 + (n+1)\alpha = 0$, so $-1/(n+1)$ | §5 |
-| what does it buy? | blob suppression only; ridge and edge responses are exactly α-invariant | §6 |
-| why not −1? | blobs vanish, but so does the filter's centre | §6.1 |
-| what does skimage use? | $+1/(\mathrm{ndim}+1)$, the right magnitude with the wrong sign | §7 |
+| eigenvalues of what? | a $2\times2$ matrix per pixel, built from $f_{rr}, f_{rc}, f_{cc}$; it acts on directions, not on the image | §2 |
+| what is α? | the mixing constant in $\lambda'_i = \lambda_i + \alpha\sum_{j\neq i}\lambda_j$ | §3 |
+| what does it change? | the *shape* of the filter $h' = \{(r\cdot\nabla)^2 + \alpha(r_\perp\cdot\nabla)^2\}G$, since $\lambda'_i = f * h'_i$ | §4, §5 |
+| why −1/3? | it is the unique α making $h'$ flat along the ridge at the origin, $(1+3\alpha) = 0$ | §6 |
+| in n dimensions? | $1 + (n+1)\alpha = 0$, so $-1/(n+1)$ | §6 |
+| what does it buy? | blob suppression only; ridge and edge responses are exactly α-invariant | §7 |
+| why not −1? | blobs vanish, but so does the filter's centre | §7.1 |
+| what does skimage use? | $+1/(\mathrm{ndim}+1)$, the right magnitude with the wrong sign | §8 |
 
 **Limits.** The structures here are synthetic and noise-free, at one σ, scored
 at the centre of the blob and ridge and at the strongest interior pixel of the
 edge. The α-invariance of the ridge and edge responses is exact for structures
 that are functions of a single linear coordinate, which these are by
-construction, and §6.2 shows that holds at six orientations rather than only
+construction, and §7.2 shows that holds at six orientations rather than only
 along the axes. A curved or finite-length ridge is not such a function, does not
 have a vanishing second curvature everywhere, and is not tested here — nor is
-anything with noise, where the smaller eigenvalue is never exactly zero. §6.2's
+anything with noise, where the smaller eigenvalue is never exactly zero. §7.2's
 third row is the reminder that the property belongs to the structure and not to
 the filter: build the same edge with a threshold and it goes away.
 
-§3's identity is checked on a vertical ridge, where the eigenvector directions
+§4's identity is checked on a vertical ridge, where the eigenvector directions
 are known in advance; it is not checked where the orientation varies within one
-image. The 3-D and higher rows of §5's table are the same limit worked through,
+image. The 3-D and higher rows of §6's table are the same limit worked through,
 not a measurement on 3-D images.
 
 ```{code-cell} ipython3
