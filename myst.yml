@@ -14,6 +14,7 @@ project:
     - file: notebooks/on_blob_dog.md
     - file: notebooks/on_frangi.md
     - file: notebooks/on_meijering.md
+    - file: notebooks/jerman_vesselness.md
     - file: notebooks/meijering_alpha.md
     - file: notebooks/on_hessian.md
     - file: notebooks/bresenham_nd_cython.md

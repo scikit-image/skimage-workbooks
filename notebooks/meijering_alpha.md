@@ -35,9 +35,6 @@ import matplotlib.pyplot as plt
 from matplotlib.colors import LinearSegmentedColormap
 from scipy import linalg
 
-import importlib.util
-from pathlib import Path
-
 from nbhelper import show_table
 ```
 

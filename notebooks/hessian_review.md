@@ -37,9 +37,6 @@ import matplotlib.pyplot as plt
 from matplotlib.colors import LinearSegmentedColormap, TwoSlopeNorm
 from scipy.signal import resample
 
-import importlib.util
-from pathlib import Path
-
 from IPython.display import Markdown, display
 
 from nbhelper import show_table
@@ -127,18 +124,98 @@ basis of ridge detection, which is what `frangi`, `sato` and `meijering` do.
 ```{code-cell} ipython3
 from skimage.feature import hessian_matrix_eigvals
 
-BLOB_N, BLOB_S = 121, 4.0
-centre = BLOB_N // 2
-bi, bj = np.indices((BLOB_N, BLOB_N), dtype=float)
-radius2 = (bi - centre) ** 2 + (bj - centre) ** 2
-blob = np.exp(-radius2 / (2 * BLOB_S**2)) / (2 * np.pi * BLOB_S**2)
+# One grid and one closed-form toolkit for every Gaussian test image below.
+# A single blob (`SOLO`) and a single ridge are special cases of the same
+# machinery as the multi-Gaussian `SCENE` (§3.3) — not a second analytic path.
+SCENE_N = 201
+SCENE_MARGIN = 50
+SCENE_INTERIOR = slice(SCENE_MARGIN, -SCENE_MARGIN)
+BLOB_S, RIDGE_W = 4.0, 3.0
+centre = SCENE_N // 2
+si, sj = np.indices((SCENE_N, SCENE_N), dtype=float)
+crop = SCENE_INTERIOR
 
-# A vertical bright ridge: curved across columns, flat along rows.
-RIDGE_W = 3.0
-ridge = (np.exp(-((bj - centre) ** 2) / (2 * RIDGE_W**2))
-         / (np.sqrt(2 * np.pi) * RIDGE_W))
 
-crop = slice(35, -35)
+def blob_image(center, width, weight=1.0):
+    """Unit-integral isotropic Gaussian, times `weight`."""
+    ci, cj = center
+    r2 = (si - ci) ** 2 + (sj - cj) ** 2
+    return weight * np.exp(-r2 / (2 * width**2)) / (2 * np.pi * width**2)
+
+
+def ridge_image(axis, center, width, weight=1.0):
+    """Unit-integral 1-D Gaussian along `axis` (0 = rows, 1 = columns)."""
+    coord = si if axis == 0 else sj
+    return weight * np.exp(-((coord - center) ** 2) / (2 * width**2)) / (
+        np.sqrt(2 * np.pi) * width)
+
+
+def blob_hessian(center, width, sigma, weight=1.0):
+    """Closed-form Hessian of a smoothed isotropic blob."""
+    t2 = width**2 + sigma**2
+    ci, cj = center
+    di, dj = si - ci, sj - cj
+    g = weight * np.exp(-(di**2 + dj**2) / (2 * t2)) / (2 * np.pi * t2)
+    return [g * (di**2 / t2**2 - 1 / t2),
+            g * (di * dj / t2**2),
+            g * (dj**2 / t2**2 - 1 / t2)]
+
+
+def ridge_hessian(axis, center, width, sigma, weight=1.0):
+    """Closed-form Hessian of a smoothed axis-aligned ridge."""
+    t2 = width**2 + sigma**2
+    coord = si if axis == 0 else sj
+    d = coord - center
+    g = weight * np.exp(-(d**2) / (2 * t2)) / (np.sqrt(2 * np.pi * t2))
+    curv = g * (d**2 / t2**2 - 1 / t2)
+    zero = np.zeros_like(g)
+    if axis == 0:                                 # varies along rows
+        return [curv, zero, zero]
+    return [zero, zero, curv]                     # varies along columns
+
+
+def render_scene(parts):
+    """Sum the continuous pieces onto the integer grid."""
+    image = np.zeros((SCENE_N, SCENE_N), dtype=float)
+    for part in parts:
+        if part["kind"] == "blob":
+            image += blob_image(part["center"], part["width"], part["weight"])
+        else:
+            image += ridge_image(part["axis"], part["center"],
+                                 part["width"], part["weight"])
+    return image
+
+
+def analytic_scene_hessian(parts, sigma):
+    """Exact Hessian of the smoothed scene, term by term (the analytic standard).
+
+    "Analytic" here always means this closed form: each Gaussian stays a
+    Gaussian under smoothing (`t**2 = s**2 + sigma**2`), differentiated by
+    hand — no discrete filter, DCT, or supersampling.
+    """
+    acc = [np.zeros((SCENE_N, SCENE_N)),
+           np.zeros((SCENE_N, SCENE_N)),
+           np.zeros((SCENE_N, SCENE_N))]
+    for part in parts:
+        if part["kind"] == "blob":
+            terms = blob_hessian(part["center"], part["width"],
+                                 sigma, part["weight"])
+        else:
+            terms = ridge_hessian(part["axis"], part["center"],
+                                  part["width"], sigma, part["weight"])
+        for a, t in zip(acc, terms):
+            a += t
+    return acc
+
+
+SOLO = ({"kind": "blob", "center": (centre, centre),
+         "width": BLOB_S, "weight": 1.0},)
+solo = render_scene(SOLO)
+
+# Vertical bright ridge: curved across columns, flat along rows.
+RIDGE = ({"kind": "ridge", "axis": 1, "center": centre,
+          "width": RIDGE_W, "weight": 1.0},)
+ridge = render_scene(RIDGE)
 
 
 def eig_pair(image, sigma=2.0):
@@ -157,7 +234,7 @@ def eig_pair(image, sigma=2.0):
 
 
 fig, axes = plt.subplots(2, 3, figsize=(9.0, 5.4))
-for row, (image, label) in enumerate(((blob, "blob"), (ridge, "ridge"))):
+for row, (image, label) in enumerate(((solo, "blob"), (ridge, "ridge"))):
     strong, weak = eig_pair(image)
     show(axes[row, 0], image[crop, crop], label)
     show(axes[row, 1], strong[crop, crop], r"$\lambda$ stronger $|\cdot|$",
@@ -194,11 +271,11 @@ The three Hessian entries themselves are the second derivatives that those
 eigenvalues are built from:
 
 ```{code-cell} ipython3
-entries = hessian_matrix(blob, sigma=2.0, mode="nearest",
+entries = hessian_matrix(solo, sigma=2.0, mode="nearest",
                          use_gaussian_derivatives=True)
 
 fig, axes = plt.subplots(1, 4, figsize=(10.0, 2.6))
-show(axes[0], blob[crop, crop], "a blob")
+show(axes[0], solo[crop, crop], "a blob (SOLO)")
 for ax, name, entry in zip(axes[1:], ("Hii", "Hij", "Hjj"), entries):
     show(ax, entry[crop, crop], name, diverging=True)
 fig.suptitle("the same blob: its three second derivatives at sigma = 2", y=1.04)
@@ -250,7 +327,7 @@ Both are a few lines, both return something plausible, and at a comfortable
 scale they agree.
 
 ```{code-cell} ipython3
-a, b = route_a(blob, 2.0), route_b(blob, 2.0)
+a, b = route_a(solo, 2.0), route_b(solo, 2.0)
 scale = max(np.abs(e).max() for e in b)
 worst = max(np.abs(x - y).max() for x, y in zip(a, b))
 print(f"route A against route B at sigma = 2: worst difference "
@@ -273,22 +350,13 @@ There are four available, and they check each other.
 A Gaussian smoothed by a Gaussian is another Gaussian, with
 `t**2 = s**2 + sigma**2`. So for a test image built from Gaussians, the smoothed
 Hessian is known exactly, in closed form, with no discretisation anywhere.
+That is what `analytic_scene_hessian` computes (§1): term-by-term for every
+blob or ridge in a scene. `SOLO` is the one-blob case; `SCENE` below adds
+widths and ridges. Tables that say "vs analytic" mean against this closed
+form — not against `dct_hessian` or `gold_hessian`.
 
 ```{code-cell} ipython3
-def analytic_hessian(sigma):
-    """The exact Hessian of the blob after smoothing at `sigma`."""
-    t2 = BLOB_S**2 + sigma**2
-    g = np.exp(-radius2 / (2 * t2)) / (2 * np.pi * t2)
-    di, dj = bi - centre, bj - centre
-    return [g * (di**2 / t2**2 - 1 / t2),
-            g * (di * dj / t2**2),
-            g * (dj**2 / t2**2 - 1 / t2)]
-
-
-INTERIOR = slice(35, -35)
-
-
-def error_against(computed, truth, region=INTERIOR):
+def error_against(computed, truth, region=SCENE_INTERIOR):
     """Worst disagreement over the three entries, on a shared interior."""
     scale = max(np.abs(e).max() for e in truth)
     return max(np.abs(a[region, region] - b[region, region]).max()
@@ -296,8 +364,8 @@ def error_against(computed, truth, region=INTERIOR):
 ```
 
 This is exact but narrow: it holds only for images we construct, and a method
-could in principle do well on a smooth blob and badly on a photograph. The
-construction below widens it without leaving the closed form.
+could in principle do well on a smooth Gaussian and badly on a photograph.
+The multi-Gaussian `SCENE` widens the test without leaving the closed form.
 
 ### 3.2 Supersampling, for any image
 
@@ -315,10 +383,26 @@ coordinates is `k**2` times the derivative with respect to fine ones, which is
 the only scaling involved.
 
 ```{code-cell} ipython3
+from concurrent.futures import ThreadPoolExecutor
+
+
 def upsample(image, factor):
     """Band-limited resampling onto a `factor` times finer grid."""
     finer = resample(image, image.shape[0] * factor, axis=0)
     return resample(finer, image.shape[1] * factor, axis=1)
+
+
+# `gold_hessian` on a 256² photograph at factor=4 builds a 2048² grid and runs
+# three Gaussian filters there (~seconds each). Later cells ask for the same
+# (image, sigma, factor, mode) many times; cache the fine grid (shared across
+# sigmas) and the finished tensors so repeats are free.
+_GOLD_FINE = {}
+_GOLD_HESSIAN = {}
+
+
+def _array_key(image):
+    """Content key for cache lookups (shape + digest; images are small here)."""
+    return (image.shape, image.dtype.str, hash(image.tobytes()))
 
 
 def gold_hessian(image, sigma, factor=4, mode="nearest"):
@@ -331,6 +415,12 @@ def gold_hessian(image, sigma, factor=4, mode="nearest"):
     `mode` must match the method under test. A reference that extends the image
     by a different rule measures that difference and calls it an error.
     """
+    image = np.asarray(image)
+    cache_key = (_array_key(image), float(sigma), int(factor), mode)
+    cached = _GOLD_HESSIAN.get(cache_key)
+    if cached is not None:
+        return cached
+
     # `ndimage` and `numpy.pad` spell the same rules differently.
     pad_mode = {"nearest": "edge", "reflect": "symmetric", "mirror": "reflect",
                 "wrap": "wrap", "constant": "constant"}[mode]
@@ -342,12 +432,30 @@ def gold_hessian(image, sigma, factor=4, mode="nearest"):
     if min(pads) < 8 * sigma + 2:
         raise ValueError("image too small at this sigma: the kernel would "
                          "reach the crop")
-    fine = upsample(np.pad(image, [(p, p) for p in pads], mode=pad_mode), factor)
-    elems = [ndi.gaussian_filter(fine, factor * sigma, order=order, mode=mode,
-                                 truncate=8)
-             for order in ([2, 0], [1, 1], [0, 2])]
+
+    fine_key = (_array_key(image), int(factor), mode)
+    fine_hit = _GOLD_FINE.get(fine_key)
+    if fine_hit is None:
+        fine = upsample(np.pad(image, [(p, p) for p in pads], mode=pad_mode),
+                        factor)
+        _GOLD_FINE[fine_key] = (fine, pads)
+    else:
+        fine, pads = fine_hit
+
+    orders = ([2, 0], [1, 1], [0, 2])
+    sigma_fine = factor * sigma
+
+    def _one(order):
+        return ndi.gaussian_filter(fine, sigma_fine, order=order, mode=mode,
+                                   truncate=8)
+
+    # The three orders are independent; ndimage releases the GIL in C.
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        elems = list(pool.map(_one, orders))
     coarse = [(e[::factor, ::factor] * factor**2) for e in elems]
-    return [e[pads[0]:-pads[0], pads[1]:-pads[1]] for e in coarse]
+    result = [e[pads[0]:-pads[0], pads[1]:-pads[1]] for e in coarse]
+    _GOLD_HESSIAN[cache_key] = result
+    return result
 ```
 
 Three details in that function are not decoration. The image is padded
@@ -371,141 +479,9 @@ Section 3.6 measures both against an image whose exact answer is known.
 ### 3.3 The two standards agree
 
 The supersampled reference is only worth having if it converges to the answer we
-already know. On the blob, where the closed form applies, it does.
-
-```{code-cell} ipython3
-factors = (1, 2, 4, 8)
-rows = []
-for sigma in (0.3, 0.4, 0.5, 0.7, 1.0, 2.0):
-    row = {"sigma": sigma}
-    for k in factors:
-        err = error_against(gold_hessian(blob, sigma, factor=k),
-                            analytic_hessian(sigma))
-        row[f"k = {k}"] = f"{err:.3%}"
-    rows.append(row)
-show_table(pd.DataFrame(rows))
-```
-
-At `k = 4` the reference reproduces the closed form to the printed precision at
-every scale, and refining further changes nothing. So `k = 4` is enough *on this
-image*.
-
-It is tempting to read that as trustworthiness on images with no closed form,
-and that step does not follow. Convergence in `k` tests one of the two things
-that can go wrong — how well the fine-grid kernels are sampled — and a Gaussian
-blob is the shape least able to expose the other, because it has decayed to
-nothing before it reaches the border where the padding acts. Section 3.6 puts
-the same reference on an image that does reach the border and finds an error
-`k` cannot touch.
-
-The `k = 1` column is worth a second look, because it is not a reference at all:
-it is route B computed directly on the original grid, with no refinement. At
-`sigma = 0.3` it is wrong by a factor of a hundred and sixty. That is the first
-sign of the problem section 5 is about, and it appears here as a control rather
-than as a claim.
-
-+++
-
-### 3.4 A gallery of Gaussians, still closed form
-
-The single blob is exact and thin. The band-limited yardstick is general and
-approximate. Between them sits a compromise that keeps the algebra and widens
-the image: a sum of Gaussian blobs and axis-aligned ridges of **several
-widths**, placed well inside the frame so the border never enters the
-comparison.
-
-The Hessian is linear, and each Gaussian stays a Gaussian under smoothing, so
-
-$$
-H\bigl(G_\sigma * \textstyle\sum_i w_i\,f_i\bigr)
-=
-\sum_i w_i\,
-H\bigl(G_\sigma * f_i\bigr),
-$$
-
-with each term known in closed form: an isotropic blob of width $s$ becomes one
-of width $\sqrt{s^2+\sigma^2}$, and a ridge that is constant along one axis
-smooths as a one-dimensional Gaussian along the other. No fit, no
-supersampling — only placement far enough from the edge that
-`mode='nearest'` cannot matter on the interior we score.
-
-```{code-cell} ipython3
-SCENE_N = 201
-SCENE_MARGIN = 50          # centres stay this far from every edge
-SCENE_INTERIOR = slice(SCENE_MARGIN, -SCENE_MARGIN)
-si, sj = np.indices((SCENE_N, SCENE_N), dtype=float)
-
-
-def blob_image(center, width, weight=1.0):
-    """Unit-integral isotropic Gaussian, times `weight`."""
-    ci, cj = center
-    r2 = (si - ci) ** 2 + (sj - cj) ** 2
-    return weight * np.exp(-r2 / (2 * width**2)) / (2 * np.pi * width**2)
-
-
-def ridge_image(axis, center, width, weight=1.0):
-    """Unit-integral 1-D Gaussian along `axis` (0 = rows, 1 = columns)."""
-    coord = si if axis == 0 else sj
-    return weight * np.exp(-((coord - center) ** 2) / (2 * width**2)) / (
-        np.sqrt(2 * np.pi) * width)
-
-
-def blob_hessian(center, width, sigma, weight=1.0):
-    """Closed-form Hessian of a smoothed isotropic blob."""
-    t2 = width**2 + sigma**2
-    ci, cj = center
-    di, dj = si - ci, sj - cj
-    g = weight * np.exp(-(di**2 + dj**2) / (2 * t2)) / (2 * np.pi * t2)
-    return [g * (di**2 / t2**2 - 1 / t2),
-            g * (di * dj / t2**2),
-            g * (dj**2 / t2**2 - 1 / t2)]
-
-
-def ridge_hessian(axis, center, width, sigma, weight=1.0):
-    """Closed-form Hessian of a smoothed axis-aligned ridge."""
-    t2 = width**2 + sigma**2
-    coord = si if axis == 0 else sj
-    d = coord - center
-    g = weight * np.exp(-(d**2) / (2 * t2)) / (np.sqrt(2 * np.pi * t2))
-    curv = g * (d**2 / t2**2 - 1 / t2)
-    zero = np.zeros_like(g)
-    if axis == 0:                                 # varies along rows
-        return [curv, zero, zero]
-    return [zero, zero, curv]                     # varies along columns
-
-
-def render_scene(parts):
-    """Sum the continuous pieces onto the integer grid."""
-    image = np.zeros((SCENE_N, SCENE_N), dtype=float)
-    for part in parts:
-        kind = part["kind"]
-        if kind == "blob":
-            image += blob_image(part["center"], part["width"], part["weight"])
-        else:
-            image += ridge_image(part["axis"], part["center"],
-                                 part["width"], part["weight"])
-    return image
-
-
-def analytic_scene_hessian(parts, sigma):
-    """Exact Hessian of the smoothed scene, term by term."""
-    acc = [np.zeros((SCENE_N, SCENE_N)),
-           np.zeros((SCENE_N, SCENE_N)),
-           np.zeros((SCENE_N, SCENE_N))]
-    for part in parts:
-        if part["kind"] == "blob":
-            terms = blob_hessian(part["center"], part["width"],
-                                 sigma, part["weight"])
-        else:
-            terms = ridge_hessian(part["axis"], part["center"],
-                                  part["width"], sigma, part["weight"])
-        for a, t in zip(acc, terms):
-            a += t
-    return acc
-```
-
-One working scene: four blobs of different width, one vertical ridge, one
-horizontal ridge. Every centre is at least `SCENE_MARGIN` pixels from the edge.
+already know. On a multi-Gaussian scene the closed form still applies, and it
+stresses several widths and ridge geometry at once — not only a single blob
+that has already decayed before it reaches the border.
 
 ```{code-cell} ipython3
 SCENE = (
@@ -517,12 +493,53 @@ SCENE = (
     {"kind": "ridge", "axis": 0, "center": 100, "width": 4.0, "weight": 0.5},
 )
 scene = render_scene(SCENE)
-
-# A one-blob crop of the same machinery, for the single-Gaussian check below.
-SOLO = ({"kind": "blob", "center": (SCENE_N // 2, SCENE_N // 2),
-         "width": BLOB_S, "weight": 1.0},)
-solo = render_scene(SOLO)
 ```
+
+```{code-cell} ipython3
+factors = (1, 2, 4, 8)
+rows = []
+for sigma in (0.3, 0.4, 0.5, 0.7, 1.0, 2.0):
+    truth = analytic_scene_hessian(SCENE, sigma)
+    row = {"sigma": sigma}
+    for k in factors:
+        err = error_against(gold_hessian(scene, sigma, factor=k), truth)
+        row[f"k = {k}"] = f"{err:.3%}"
+    rows.append(row)
+show_table(pd.DataFrame(rows))
+```
+
+At `k = 4` the reference reproduces the closed form to the printed precision at
+comfortable scales, and refining further changes nothing. So `k = 4` is enough
+*on this scene*. (Below `sigma ≈ 1` the gap is the small-σ kernel sampling of
+section 5, not a failure of the closed form.)
+
+It is tempting to read that as trustworthiness on images with no closed form,
+and that step does not follow. Convergence in `k` tests one of the two things
+that can go wrong — how well the fine-grid kernels are sampled — and a sum of
+Gaussians well inside the margin is still a weak probe of padding, because the
+signal has decayed before the border where reconstruction acts. Section 3.6 puts
+the same reference on an image that does reach the border and finds an error
+`k` cannot touch.
+
+The `k = 1` column is worth a second look, because it is not a reference at all:
+it is route B computed directly on the original grid, with no refinement. At
+`sigma = 0.3` it is wrong by a large factor. That is the first sign of the
+problem section 5 is about, and it appears here as a control rather than as a
+claim.
+
++++
+
+### 3.4 A gallery of Gaussians, still closed form
+
+`SCENE` in §3.3 is already the widened closed-form test: several blob widths
+plus axis-aligned ridges, all inside `SCENE_MARGIN` so the border never enters
+the interior score. The Hessian is linear, and each term stays closed form under
+smoothing — the same `analytic_scene_hessian` used for `SOLO`.
+
+The left panel below is the input that `hessian_matrix` will see. The other two
+are not approximations: they are the algebra evaluated on the grid. Narrow
+structures dominate $H$ at this scale; the wide blob at bottom-right is already
+mild.
 
 ```{code-cell} ipython3
 fig, axes = plt.subplots(1, 3, figsize=(10.5, 3.2))
@@ -535,11 +552,6 @@ fig.suptitle("closed-form Hessian on a multi-Gaussian scene "
              f"(margin {SCENE_MARGIN} px)", y=1.04)
 fig.tight_layout()
 ```
-
-The left panel is the input that `hessian_matrix` will see. The other two are
-not approximations: they are the algebra evaluated on the grid. Narrow
-structures dominate $H$ at this scale; the wide blob at bottom-right is already
-mild.
 
 A few more layouts, so the construction is clearly a family rather than one
 picture.
@@ -574,59 +586,13 @@ fig.tight_layout()
 
 ### 3.5 How the four standards relate
 
-Three checks for the closed forms and the supersampler, in order of what they
-pin down. The fourth standard — the DCT continuous Gaussian — follows in §3.6.
+Two checks for the closed form and the supersampler. The fourth standard — the
+DCT continuous Gaussian — follows in §3.6.
 
-**Single blob recovers the old closed form.** The gallery machinery, restricted
-to one centred blob of width `BLOB_S`, must match `analytic_hessian` on the
-shared interior of the smaller grid — otherwise the generalisation is wrong
-before any method is judged.
-
-```{code-cell} ipython3
-# Evaluate the scene analytic on the solo image's grid geometry by cropping
-# the centred SCENE_N blob down to BLOB_N, matching `blob` / `analytic_hessian`.
-half = BLOB_N // 2
-mid = SCENE_N // 2
-crop_solo = slice(mid - half, mid - half + BLOB_N)
-rows = []
-for sigma in (0.5, 1.0, 2.0, 4.0):
-    from_scene = [e[crop_solo, crop_solo]
-                  for e in analytic_scene_hessian(SOLO, sigma)]
-    from_blob = analytic_hessian(sigma)
-    rows.append({
-        "sigma": sigma,
-        "max |scene − blob analytic| / scale":
-            f"{error_against(from_scene, from_blob):.2e}",
-        "max |solo image − blob|":
-            f"{np.abs(solo[crop_solo, crop_solo] - blob).max():.2e}",
-    })
-show_table(pd.DataFrame(rows))
-```
-
-**Band-limited sampling tracks the multi-Gaussian analytic.** On the full
-scene, `gold_hessian` at rising refinement should approach the closed form, as
-it did for the single blob in §3.3 — now with several scales present at once.
-
-```{code-cell} ipython3
-rows = []
-for sigma in (0.5, 1.0, 2.0, 3.0):
-    truth = analytic_scene_hessian(SCENE, sigma)
-    row = {"sigma": sigma}
-    for k in (1, 2, 4):
-        got = gold_hessian(scene, sigma, factor=k)
-        row[f"k = {k}"] = f"{error_against(got, truth, SCENE_INTERIOR):.3%}"
-    rows.append(row)
-show_table(pd.DataFrame(rows))
-```
-
-**What each standard is for.** The single blob is the simplest certificate that
-the algebra and the numerical yardsticks agree. The multi-Gaussian scene is the
-same certificate with mixed widths and ridge geometry — still exact, still
-interior-only. The DCT continuous gold (§3.6) is the band-limited exact answer
-for an arbitrary image under half-sample reflection. The supersampler is what
-remains when the pad mode must match the code under test (`nearest`, and so
-on). On Gaussian scenes these are not competing opinions: the closed forms are
-identities, and both numerical standards converge to them on the interior.
+**Band-limited sampling tracks the multi-Gaussian analytic.** §3.3 already
+showed `gold_hessian` approaching `analytic_scene_hessian(SCENE, ·)` as `k`
+rises. At the working refinement, compare gold and the shipped filter to that
+same analytic on the interior.
 
 ```{code-cell} ipython3
 # At the working refinement, multi-analytic vs gold, and vs the shipped filter.
@@ -639,21 +605,29 @@ for sigma in (0.7, 1.0, 1.5, 2.0, 3.0):
     rows.append({
         "sigma": sigma,
         "gold k=4 vs analytic":
-            f"{error_against(gold, truth, SCENE_INTERIOR):.3%}",
+            f"{error_against(gold, truth):.3%}",
         "shipped vs analytic":
-            f"{error_against(shipped, truth, SCENE_INTERIOR):.3%}",
+            f"{error_against(shipped, truth):.3%}",
         "shipped vs gold k=4":
-            f"{error_against(shipped, gold, SCENE_INTERIOR):.3%}",
+            f"{error_against(shipped, gold):.3%}",
     })
 show_table(pd.DataFrame(rows))
 ```
 
+**What each standard is for.** The Gaussian closed form
+(`analytic_scene_hessian`) is an identity on images we construct — `SOLO` for
+one blob, `SCENE` for mixed widths and ridges — and is the only yardstick that
+does not assume a band-limited interpolant. The DCT continuous gold (§3.6) is
+the band-limited exact answer for an arbitrary image under half-sample
+reflection. The supersampler is what remains when the pad mode must match the
+code under test (`nearest`, and so on). On Gaussian scenes these are not
+competing opinions: the closed forms are identities, and both numerical
+standards converge to them on the interior.
+
 At `sigma ≥ 1.5` the shipped filter, the supersampler, and the multi-Gaussian
 analytic agree to the printed precision on the interior. Below that they part
 company — and the analytic, not the supersampler, is the one that stays exact,
-which is why the gallery earns its keep next to §3.3.
-
-+++
+which is why the gallery earns its keep next to the supersampler.
 
 ### 3.6 DCT continuous Gaussian (IPOL 2016)
 
@@ -706,26 +680,10 @@ def dct_hessian(image, sigma):
             np.fft.ifft2(Fg * (-wj**2)).real[:M, :N]]
 ```
 
-On the single blob it is not an approximation of the closed form — it *is*
-the closed form, to floating point, because a Gaussian well inside the frame
-is unchanged by the even extension on the interior we score.
-
-```{code-cell} ipython3
-rows = []
-for sigma in (0.3, 0.5, 1.0, 2.0, 4.0):
-    rows.append({
-        "sigma": sigma,
-        "dct vs analytic":
-            f"{error_against(dct_hessian(blob, sigma), analytic_hessian(sigma)):.2e}",
-        "gold k=4 vs analytic":
-            f"{error_against(gold_hessian(blob, sigma, factor=4), analytic_hessian(sigma)):.3%}",
-    })
-show_table(pd.DataFrame(rows))
-```
-
-On the multi-Gaussian scene the same: DCT matches the term-by-term analytic;
-the supersampler only catches up once `k` is large enough that SciPy's kernels
-are well sampled.
+On `SOLO` or `SCENE`, DCT is not an approximation of the Gaussian closed form
+on the interior we score — it *is* that form to floating point — because a
+Gaussian well inside the frame is unchanged by the even extension there. The
+table uses `SCENE`, the stricter case (several widths and ridges).
 
 ```{code-cell} ipython3
 rows = []
@@ -734,14 +692,17 @@ for sigma in (0.5, 0.7, 1.0, 2.0):
     rows.append({
         "sigma": sigma,
         "dct vs analytic":
-            f"{error_against(dct_hessian(scene, sigma), truth, SCENE_INTERIOR):.2e}",
+            f"{error_against(dct_hessian(scene, sigma), truth):.2e}",
         "gold k=4 vs analytic":
-            f"{error_against(gold_hessian(scene, sigma, factor=4), truth, SCENE_INTERIOR):.3%}",
+            f"{error_against(gold_hessian(scene, sigma, factor=4), truth):.3%}",
         "gold k=4 vs dct":
-            f"{error_against(gold_hessian(scene, sigma, factor=4), dct_hessian(scene, sigma), SCENE_INTERIOR):.3%}",
+            f"{error_against(gold_hessian(scene, sigma, factor=4), dct_hessian(scene, sigma)):.3%}",
     })
 show_table(pd.DataFrame(rows))
 ```
+
+DCT matches the term-by-term analytic; the supersampler only catches up once
+`k` is large enough that SciPy's kernels are well sampled.
 
 Those two tables are agreement on images built from Gaussians, and a Gaussian
 decays to nothing at the frame edge. That is the one shape for which the
@@ -835,7 +796,7 @@ it, the supersampler and the DCT agree to floating point on a photograph too.
 
 ```{code-cell} ipython3
 # The photograph of section 6, brought forward: a real image is the case the
-# Gaussian scenes cannot stand in for.
+# a single smooth Gaussian cannot stand in for.
 CAMERA = ski.util.img_as_float(ski.data.camera())[::2, ::2]
 
 rows = []
@@ -866,7 +827,7 @@ under a boundary rule that is not half-sample reflection. `hessian_matrix`
 itself defaults to `mode='constant'`, and the methods compared in sections 6 to
 8 run at `mode='nearest'`, so that is not a hypothetical — section 8 is entirely
 supersampler work. For images built as sums of Gaussians the closed form of
-§3.1 / §3.4 remains the simplest exact answer, and is the only one of the three
+§3.1 / §3.3 remains the simplest exact answer, and is the only one of the three
 that does not assume the image is band-limited.
 
 That last point is worth keeping in view. The DCT and the supersampler are not
@@ -886,11 +847,12 @@ SCALES = (0.4, 0.5, 0.7, 1.0, 1.5, 2.0, 3.0, 5.0)
 
 rows = []
 for sigma in SCALES:
-    truth = dct_hessian(blob, sigma)        # interior score, so the exact one
+    # Interior score: DCT matches the Gaussian analytic on SOLO (§3.6).
+    truth = dct_hessian(solo, sigma)
     rows.append({
         "sigma": sigma,
-        "route A, differences": f"{error_against(route_a(blob, sigma), truth):.2%}",
-        "route B, Gaussian": f"{error_against(route_b(blob, sigma), truth):.2%}",
+        "route A, differences": f"{error_against(route_a(solo, sigma), truth):.2%}",
+        "route B, Gaussian": f"{error_against(route_b(solo, sigma), truth):.2%}",
     })
 show_table(pd.DataFrame(rows))
 ```
@@ -1625,18 +1587,20 @@ derivative zero at the edge by symmetry, and a one-sided estimate does not know
 that.
 
 That 27.8% interior figure is worth a note of its own, because section 4 put
-route A at about 5% on the blob. Both are right. The floor is
+route A at about 5% on a smooth Gaussian (`SOLO`). Both are right. The floor is
 `sin(w)**2 / w**2`, which depends on what frequencies the image contains, and a
-photograph contains far more high-frequency content than a smooth Gaussian blob.
+photograph contains far more high-frequency content than a single Gaussian blob.
 
 ```{code-cell} ipython3
 rows = []
-for name, image in (("blob", blob), ("camera", PHOTO)):
+for name, image, region in (
+    ("solo Gaussian", solo, SCENE_INTERIOR),
+    ("camera", PHOTO, slice(35, -35)),
+):
     truth = gold_hessian(image, 1.5, mode="nearest")
     got = route_a(image, 1.5, mode="nearest")
     scale = max(np.abs(e).max() for e in truth)
-    inner = (slice(35, -35),) * 2
-    err = max(np.abs(a[inner] - b[inner]).max()
+    err = max(np.abs(a[region, region] - b[region, region]).max()
               for a, b in zip(got, truth)) / scale
     rows.append({"image": name, "route A, interior": f"{err:.1%}"})
 show_table(pd.DataFrame(rows))
@@ -1729,10 +1693,10 @@ def ridge_border_frame():
 
 
 display(Markdown("**as shipped, two-pass**"))
-show_table(ridge_border_frame(), index="filter")
+show_table(ridge_border_frame().set_index("filter"))
 with mock.patch.object(corner_mod, "hessian_matrix", as_hessian_matrix(one_pass)):
     display(Markdown("**with one-pass corrected kernels**"))
-    show_table(ridge_border_frame(), index="filter")
+    show_table(ridge_border_frame().set_index("filter"))
 ```
 
 Three of the four become exact — not improved, exact. `meijering` does not, and
@@ -1828,9 +1792,9 @@ box filters over integral images and are untouched by any of this; they have
 their own border defect, larger than this one, described in `on_blob_dog.md`.
 And `meijering`'s normalisation needs deciding on its own terms.
 
-Measured with scikit-image from this working tree, on a 121×121 analytic blob,
-a 201×201 multi-Gaussian scene (blobs and ridges, closed form), and the
-256×256 `camera` photograph, against the IPOL DCT continuous Hessian and a
+Measured with scikit-image from this working tree, on the 201×201 Gaussian
+scenes (`SOLO` and multi-blob/ridge `SCENE`, closed form) and the 256×256
+`camera` photograph, against the IPOL DCT continuous Hessian and a
 supersampled reference at refinement factor 4.
 
 ```{code-cell} ipython3

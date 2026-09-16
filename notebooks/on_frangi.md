@@ -40,6 +40,8 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.colors import LinearSegmentedColormap
 from itertools import permutations
+
+from nbhelper import show_table
 ```
 
 ```{code-cell} ipython3
@@ -238,10 +240,12 @@ $\theta$ — that is, below which a wrong-polarity pixel is scored as a vessel.
 ```{code-cell} ipython3
 BETA = 0.5
 
-pd.DataFrame(
+show_table(
+    pd.DataFrame(
     [{"blobness above": theta,
       "needs |lambda1| below": f"{np.sqrt(-2 * BETA**2 * np.log(theta)) * 1e-10:.2e}"}
      for theta in (0.5, 0.01)]).set_index("blobness above")
+)
 ```
 
 Those thresholds are minute, so the temptation is to say the leak cannot happen
@@ -264,7 +268,7 @@ def leak_census(image, sigmas, beta=BETA):
     return pd.DataFrame(out).set_index("sigma")
 
 
-leak_census(PHOTO, SIGMAS)
+show_table(leak_census(PHOTO, SIGMAS))
 ```
 
 ```{code-cell} ipython3
@@ -331,7 +335,7 @@ for label, fn in (("shipped", shipped_parts), ("sign test", fixed_parts)):
         "black_ridges=True": single_scale(fn, bright, 3, GAMMA_DEMO, True)[centre],
         "black_ridges=False": single_scale(fn, bright, 3, GAMMA_DEMO, False)[centre],
     }
-pd.DataFrame(report).round(6)
+show_table(pd.DataFrame(report).round(6))
 ```
 
 The right-polarity answer is untouched; the wrong-polarity answer goes from the
@@ -432,11 +436,13 @@ CANDIDATES = {
     "  exp(-σ/4)        wrong": np.exp(-SCAN / 4),
 }
 measured = PROFILES[4.0]
-pd.DataFrame(
+show_table(
+    pd.DataFrame(
     [{"candidate law": name,
       "correlation": f"{np.corrcoef(measured / measured[0], law / law[0])[0, 1]:.6f}",
       "worst relative deviation": f"{worst_deviation(measured, law):.1%}"}
      for name, law in CANDIDATES.items()]).set_index("candidate law")
+)
 ```
 
 Every candidate correlates above 0.99, the wrong ones included. The deviation
@@ -467,7 +473,7 @@ for width, profile in PROFILES.items():
         "largest |λ₁| over the scan": worst_lambda1,
         "smallest blobness over the scan": least_blobness,
     })
-pd.DataFrame(rows_30).set_index("ridge width w")
+show_table(pd.DataFrame(rows_30).set_index("ridge width w"))
 ```
 
 $S$ falls monotonically at every width, tracks the continuous law to within a
@@ -512,7 +518,7 @@ for width, base in PROFILES.items():
     row_out["predicted w"] = width
     row_out["predicted w·√2"] = round(width * np.sqrt(2), 2)
     selection.append(row_out)
-pd.DataFrame(selection).set_index("true width w")
+show_table(pd.DataFrame(selection).set_index("true width w"))
 ```
 
 `σ^1.5` selects the ridge's own width and `σ^2` selects $w\sqrt2$ — exactly the
@@ -569,7 +575,7 @@ for divisor in (1, 10, 100, 1000):
     rows_gamma.append({"gamma": f"γ₀/{divisor}",
                        "live share of frame": f"{share_live:.1%}",
                        **{f"σ={s}": f"{v:.1%}" for s, v in shares.items()}})
-pd.DataFrame(rows_gamma).set_index("gamma")
+show_table(pd.DataFrame(rows_gamma).set_index("gamma"))
 ```
 
 At the default γ the finest scale takes the whole live set. Divide γ by a
@@ -621,7 +627,7 @@ for power in (0.0, 1.5, 2.0):
                      "winning sigma": max(scores, key=scores.get),
                      "scales within 1e-6 of the winner":
                          sum(v > max(scores.values()) - 1e-6 for v in scores.values())})
-pd.DataFrame(rows_out).set_index("factor")
+show_table(pd.DataFrame(rows_out).set_index("factor"))
 ```
 
 The width-6 ridge is won by σ = 1 with no exponent, by σ = 6 with
@@ -699,12 +705,14 @@ fig.tight_layout()
 
 ```{code-cell} ipython3
 mid = N // 2
-pd.DataFrame(
+show_table(
+    pd.DataFrame(
     {"true width": WIDTHS_DEMO,
      f"sigmas={TRIPLE}": [up[mid, c] for c in CENTRES],
      f"sigmas={TRIPLE[::-1]}": [down[mid, c] for c in CENTRES]},
     index=pd.Index(CENTRES, name="ridge at column"),
-).round(4)
+    ).round(4)
+)
 ```
 
 Ascending, the filter reports one vessel: the narrow ridge scores 0.86 and the
@@ -723,10 +731,12 @@ for perm in permutations(SIGMAS[:3]):
 
 print(f"{len(orbit)} distinct outputs from 6 permutations;"
       f" total response spans a factor of {max(orbit) / min(orbit):.0f}")
-pd.DataFrame([{"sum of output": k,
+show_table(
+    pd.DataFrame([{"sum of output": k,
                "first sigma": sorted({p[0] for p in v}),
                "permutations": ", ".join(map(str, v))}
               for k, v in sorted(orbit.items())]).set_index("sum of output")
+)
 ```
 
 +++
@@ -845,7 +855,7 @@ for label, fn in (
         ("frangi, gamma=15", lambda im: frangi(im, sigmas=SIGMAS, gamma=15))):
     probes[label] = {"one distant pixel": far_field(fn, PHOTO),
                      "crop the surroundings": crop_change(fn, PHOTO)}
-pd.DataFrame(probes).T.map(lambda v: f"{v:.2%}")
+show_table(pd.DataFrame(probes).T.map(lambda v: f"{v:.2%}"))
 ```
 
 `sato` is local under both probes, as a filter should be. `frangi` is not, and
@@ -897,8 +907,10 @@ maps["γ per scale"] = np.array(SIGMAS)[fuse(cached_photo, "per-scale").argmax(0
 V_REF = fuse(cached_photo, gammas[SIGMAS[0]]).max(0)
 V_FLOOR = 0.01
 
-pd.DataFrame({label: {s: f"{np.mean(won == s):.1%}" for s in SIGMAS}
+show_table(
+    pd.DataFrame({label: {s: f"{np.mean(won == s):.1%}" for s in SIGMAS}
               for label, won in maps.items()}).T
+)
 ```
 
 ```{code-cell} ipython3
@@ -1010,7 +1022,7 @@ for label, eig_fn in (("shipped Hessian", eigen_pair),
 frames = {k: {kk: vv for kk, vv in v.items() if kk != "_map"} for k, v in border.items()}
 for label, v in border.items():
     print(f"{label:<22} largest disagreement anywhere: {v['_map'].max():.3g}")
-pd.DataFrame(frames).T.map(lambda v: f"{v:.2%}")
+show_table(pd.DataFrame(frames).T.map(lambda v: f"{v:.2%}"))
 ```
 
 ```{code-cell} ipython3
@@ -1065,13 +1077,15 @@ qualification.
 ref = frangi(PHOTO, sigmas=SIGMAS, alpha=0.5, gamma=GAMMA_FIXED)
 volume = np.stack([PHOTO[::2, ::2]] * 24, axis=0)
 ref3 = frangi(volume, sigmas=[2], alpha=0.5, gamma=GAMMA_FIXED)
-pd.DataFrame(
+show_table(
+    pd.DataFrame(
     [{"alpha": a,
       "2-D: max |diff| vs alpha=0.5":
           np.abs(frangi(PHOTO, sigmas=SIGMAS, alpha=a, gamma=GAMMA_FIXED) - ref).max(),
       "3-D: max |diff| vs alpha=0.5":
           np.abs(frangi(volume, sigmas=[2], alpha=a, gamma=GAMMA_FIXED) - ref3).max()}
      for a in (0.1, 2.0, 5.0)]).set_index("alpha").round(6)
+)
 ```
 
 Exactly zero in 2-D, non-zero in 3-D. This is a docstring fix, not a code fix:
@@ -1115,7 +1129,7 @@ for name, image in CORPUS.items():
         "D4 one distant pixel":
             f"{far_field(lambda im: frangi(im, sigmas=SIGMAS), image):.1%}",
     })
-pd.DataFrame(summary).set_index("image")
+show_table(pd.DataFrame(summary).set_index("image"))
 ```
 
 Every image is affected by D3 and D4, and D3's effect is not a rescaling that a
@@ -1137,7 +1151,7 @@ for width in (1.0, 2.0, 4.0, 8.0):
         "sign test, wrong polarity": single_scale(fixed_parts, ridge, 3, g, True)[centre],
         "sign test, right polarity": single_scale(fixed_parts, ridge, 3, g, False)[centre],
     })
-pd.DataFrame(polarity).set_index("ridge width").round(6)
+show_table(pd.DataFrame(polarity).set_index("ridge width").round(6))
 ```
 
 ## 9. Comparators
@@ -1151,7 +1165,7 @@ in-filter defects is contradicted by at least one of them.
 | **ITK** `HessianToObjectnessMeasureImageFilter` | explicit `signConstraintsSatisfied` test, then zero | `SetNormalizeAcrossScale(true)` on the Hessian filter — Lindeberg γ = 1 | a **fixed user parameter**, never computed from the image; `Gamma == 0` disables the term |
 | **DIPlib** `FrangiVesselness` | — | documented recipe: multiply the input by σ² per scale, then take the supremum | not image-derived |
 | **Jerman's own MATLAB** ([source](https://github.com/timjerman/JermanEnhancementFilter)) | explicit `Lambda3 <= 0` test | `c = sigma.^2; Hxx = c*Hxx; ...` — σ² on the Hessian | `tau * max(Lambda3(:))`, per scale |
-| **skimage PR [#8074](https://github.com/scikit-image/scikit-image/pull/8074)** (`jerman`) | explicit `lambda3 <= eigval_tol` test | **none** — drops the σ² its own reference applies | `tau * lambda3.max()`, per scale, **inside the loop** |
+| **skimage PR [#8074](https://github.com/scikit-image/scikit-image/pull/8074)** (`jerman`) | explicit `lambda3 <= eigval_tol` test | none — drops the reference's σ², but the response is ratio-only so this is inert | `tau * lambda3.max()`, per scale, **inside the loop** |
 | **OpenCV** `ximgproc::RidgeDetectionFilter` | — | single fixed `ksize`, no scale loop | — |
 | **skimage `frangi` today** | clipped divide, defeated when $\lambda_1 = 0$ | none | `s.max()/2` at `sigmas[0]`, frozen |
 
@@ -1163,11 +1177,18 @@ on. Everyone who *does* derive a threshold from the image — Jerman, and the
 proposed skimage port of it — derives it per scale, which is `on_meijering.md`'s
 defect rather than this one. Nobody freezes one at an arbitrary scale.
 
-The proposed `jerman` filter is worth flagging on its own account. Its
-reference implementation multiplies the Hessian by `sigma.^2`; the PR does not,
-and it recomputes `tau * lambda3.max()` inside the scale loop. If it merges as
-written, scikit-image gains a third ridge filter with D2 and a second with
-`meijering`'s non-locality.
+The proposed `jerman` filter is worth flagging on its own account, though only
+for half of what it first appears. Its reference implementation multiplies the
+Hessian by `sigma.^2` and the PR does not, which reads as D2 arriving in a new
+filter. It is not: `jerman_vesselness.md` §3 shows the Jerman response depends
+on its two eigenvalues only through their *ratio*, so any positive rescaling of
+the Hessian — `sigma**2` included — leaves it unchanged to the last bit. The
+omission is inert.
+
+What does carry over is the other half: `jerman` recomputes
+`tau * lambda3.max()` inside the scale loop, so it would be a second filter
+with `meijering`'s non-locality. Measured there at 92% under this section's
+far-field probe.
 
 ```{code-cell} ipython3
 # sato is the in-repo control: same module, same loop, no image statistic.
@@ -1243,7 +1264,7 @@ for label, fn, parts_fn, power in (
         "D4 far field (want 0%)":
             f"{far_field(lambda im: fn(im, SIGMAS), PHOTO):.1%}",
     }
-pd.DataFrame(checks).T
+show_table(pd.DataFrame(checks).T)
 ```
 
 +++
@@ -1262,8 +1283,10 @@ for name, image in CORPUS.items():
         norms = {s: fixed_parts(image, s, power=power)[1].max() for s in SIGMAS}
         where_peak.append({"image": name, "power": power,
                            "sigma with the largest S": max(norms, key=norms.get)})
-pd.DataFrame(where_peak).pivot(index="image", columns="power",
+show_table(
+    pd.DataFrame(where_peak).pivot(index="image", columns="power",
                                values="sigma with the largest S")
+)
 ```
 
 With `power=0` the peak is at σ = 1 on every image, so `sigmas[0]` and the true
@@ -1291,7 +1314,7 @@ for label, fn in (("shipped", lambda: frangi(PHOTO, sigmas=SIGMAS)),
                   "seconds": round((time.perf_counter() - started) / 3, 3),
                   "max |diff| vs shipped":
                       f"{np.abs(out - frangi(PHOTO, sigmas=SIGMAS)).max():.3g}"})
-pd.DataFrame(costs).set_index("candidate")
+show_table(pd.DataFrame(costs).set_index("candidate"))
 ```
 
 D1 and D3 together cost nothing in time — the same number of Hessian
