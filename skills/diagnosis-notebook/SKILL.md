@@ -148,8 +148,12 @@ nothing to say.
 
 ## 10. Mathematics
 
-- Prefer to use LaTeX format mathematical notation ($a = b^2 + c$, rather than
-  typwriter font (`a = b ** 2 + c`) or unicode.
+- LaTeX format mathematical notation and symbols ($a = b^2 + c$, $\alpha$,
+  rather than typewriter font (`a = b ** 2 + c`) or Unicode.
+- Where practical use Sympy to prove short mathematical proofs.  Where the
+  proofs are longer than 10 lines, split out into a separate notebook and
+  refer back.  If the proof is longer than 20 lines, report, and request
+  confirmation.
 
 ## 11. Tables
 
