@@ -35,13 +35,14 @@ import pandas as pd
 import scipy.ndimage as ndi
 import matplotlib.pyplot as plt
 from matplotlib.colors import LinearSegmentedColormap, TwoSlopeNorm
-from IPython.display import Markdown, display
 from scipy.signal import resample
 
+import importlib.util
+from pathlib import Path
 
-def show_table(df, **kwargs):
-    """Render a DataFrame as a Markdown table in the notebook output."""
-    display(Markdown(df.to_markdown(index=False, **kwargs)))
+from IPython.display import Markdown, display
+
+from nbhelper import show_table
 ```
 
 ```{code-cell} ipython3
@@ -570,8 +571,6 @@ fig.suptitle("other placements: still a sum of Gaussians inside the margin",
              y=1.04)
 fig.tight_layout()
 ```
-
-+++
 
 ### 3.5 How the four standards relate
 
@@ -1730,10 +1729,10 @@ def ridge_border_frame():
 
 
 display(Markdown("**as shipped, two-pass**"))
-show_table(ridge_border_frame())
+show_table(ridge_border_frame(), index="filter")
 with mock.patch.object(corner_mod, "hessian_matrix", as_hessian_matrix(one_pass)):
     display(Markdown("**with one-pass corrected kernels**"))
-    show_table(ridge_border_frame())
+    show_table(ridge_border_frame(), index="filter")
 ```
 
 Three of the four become exact — not improved, exact. `meijering` does not, and
