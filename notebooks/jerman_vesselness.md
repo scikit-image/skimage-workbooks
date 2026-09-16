@@ -5,6 +5,7 @@ jupytext:
     extension: .md
     format_name: myst
     format_version: 0.13
+    jupytext_version: 1.19.5
 kernelspec:
   name: python3
   display_name: Python 3 (ipykernel)
@@ -460,6 +461,10 @@ anything.
 
 ## 7. Side by side
 
+Default `black_ridges=True` (dark vessels on a bright field) — the opposite of
+the `-PHOTO` / `-scene` probes above, which flip polarity so a bright ridge is
+scored as a dark one. `retina` needs no flip.
+
 ```{code-cell} ipython3
 fig, axes = plt.subplots(1, 4, figsize=(11.5, 3.0))
 retina = ski.util.img_as_float(ski.color.rgb2gray(ski.data.retina()))[::4, ::4]
@@ -529,8 +534,10 @@ question without any of this.
 **Limits.** One 2-D photograph, one retina crop, and synthetic Gaussian ridges,
 at `mode='reflect'` and `tau=0.75` unless stated. The 3-D path is not exercised
 at all: `lambda3 = lambda2` applies only in 2-D, and the 3-D branch uses two
-genuinely different eigenvalues, so none of §3's ratio argument has been
-checked there. The agreement with the built PR was measured once, on `camera`
+genuinely different eigenvalues. Algebraically §3's σ²-invariance still holds
+there — $\lambda_2$, $\lambda_3$, and $\max\lambda_3$ all scale together, so
+$r = \lambda_\rho/\lambda_2$ is unchanged — but that has not been measured on a
+3-D volume. The agreement with the built PR was measured once, on `camera`
 with five σ, in the `jerman-vesselness` worktree; it is quoted here, not
 reproduced. No comparison against Jerman's MATLAB was run — §2's reading of it
 is from the published source, not from executing it.
