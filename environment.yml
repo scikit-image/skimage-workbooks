@@ -9,6 +9,7 @@ dependencies:
   - setuptools
   - numpy
   - scipy
+  - sympy
   - pooch
   - matplotlib
   - pillow
