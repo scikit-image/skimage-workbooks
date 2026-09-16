@@ -2,6 +2,8 @@
 mystmd
 ipykernel
 jupyter-server
+jupytext
+sympy
 
 # Imported by the notebooks.
 # setuptools provides the `distutils` shim pyximport needs; the stdlib
