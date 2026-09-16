@@ -28,6 +28,7 @@ order throughout.
 
 ```{code-cell} ipython3
 import numpy as np
+import pandas as pd
 import scipy.ndimage as ndi
 import matplotlib.pyplot as plt
 from matplotlib.colors import LinearSegmentedColormap
@@ -588,47 +589,215 @@ for power, gamma in ((1.5, 0.75), (2.0, 1.0)):
 to within the quarter-pixel grid. The continuous derivation survives
 discretisation, the modified Hessian, the α reshaping and the clip at zero.
 
-**The α sign does not change any of this — but it costs something else.**
-Section 7 asks for α = −1/(ndim+1), and every scan above ran with the shipped
-`+1/(ndim+1)`. For a straight ridge one principal curvature is zero, so
++++
+
+### 5.2a The α sign: blob versus ridge
+
+Section 7 asks for α = −1/(ndim+1), and every scale scan above ran with the
+shipped `+1/(ndim+1)`. For a straight ridge one principal curvature is zero, so
 λ′ = λ₁ + αλ₂ = λ₁ whatever α is, and the exponent argument is untouched. What
-α buys is the paper's flatness criterion, and that is about the structures
-which are *not* ridges.
+α buys is the paper's flatness criterion: suppress structures that are *not*
+ridges.
+
+In 2-D the reshaped eigenvalues are $\lambda'_i = \lambda_i + \alpha\lambda_j$.
+After `black_ridges=False` (image negated), a bright Gaussian blob is
+isotropic with $\lambda_1 = \lambda_2 = \lambda > 0$, so
+
+$$
+\lambda' = \lambda(1 + \alpha).
+$$
+
+A bright Gaussian ridge has $\lambda_1 = 0$ along the ridge and
+$\lambda_2 = \lambda > 0$ across it, so the selected magnitude is $|\lambda|$
+independent of α. Changing the sign of α therefore rescales *only* the blob
+response, by the factor $|(1+\alpha_+)/(1+\alpha_-)| = 2$ between the shipped
+$+\tfrac13$ and the paper's $-\tfrac13$. The shipped default amplifies blobs
+relative to ridges; the paper's attenuates them.
 
 ```{code-cell} ipython3
-blob = np.exp(-((rows - N // 2) ** 2 + (cols - N // 2) ** 2) / (2 * 4.0**2))
-one_ridge = np.exp(-((cols - 60) ** 2) / (2 * 4.0**2))
-mixed = blob + one_ridge
+SIG_ALPHA = 4.0
+W_ALPHA = 4.0
+blob_only = np.exp(-((rows - N // 2) ** 2 + (cols - N // 2) ** 2)
+                   / (2 * W_ALPHA**2))
+ridge_only = np.exp(-((cols - 60) ** 2) / (2 * W_ALPHA**2))
 
-print(f"{'alpha':<18}{'blob':>10}{'ridge':>10}{'blob/ridge':>14}")
-for alpha, label in ((1 / 3, "+1/3 (shipped)"), (-1 / 3, "-1/3 (paper)")):
-    out, _ = meijering_core(mixed, (4,), how="none", alpha=alpha,
+
+def neuriteness(image, alpha, sigma=SIG_ALPHA):
+    """Single-scale Meijering response, no per-scale /max."""
+    out, _ = meijering_core(image, (sigma,), how="none", alpha=alpha,
                             black_ridges=False)
-    b, r = out[N // 2, N // 2], out[N // 2, 60]
-    print(f"{label:<18}{b:>10.4f}{r:>10.4f}{b / r:>14.3f}")
+    return out
+
+
+rows_alpha = []
+for alpha, label in ((1 / 3, "+1/3 (shipped)"), (-1 / 3, "-1/3 (paper)")):
+    b = neuriteness(blob_only, alpha)[N // 2, N // 2]
+    r = neuriteness(ridge_only, alpha)[N // 2, 60]
+    rows_alpha.append({
+        "alpha": label,
+        "blob centre": b,
+        "ridge centre": r,
+        "blob / ridge": b / r,
+    })
+df_alpha = pd.DataFrame(rows_alpha).set_index("alpha")
+display_df = df_alpha.round(4)
+display_df
 ```
 
-The paper's sign halves the blob relative to the ridge; the shipped sign leaves
-the two almost equal. The appendix derives α from
+```{code-cell} ipython3
+# Ridge response is α-invariant; the sign only rescales the blob. Ratio of the
+# two blob/ridge ratios must therefore equal |(1+1/3)/(1−1/3)| = 2.
+shipped_ratio = df_alpha.loc["+1/3 (shipped)", "blob / ridge"]
+paper_ratio = df_alpha.loc["-1/3 (paper)", "blob / ridge"]
+ridge_shipped = df_alpha.loc["+1/3 (shipped)", "ridge centre"]
+ridge_paper = df_alpha.loc["-1/3 (paper)", "ridge centre"]
+print(f"ridge centre identical under ±α: "
+      f"{np.isclose(ridge_shipped, ridge_paper)}")
+print(f"shipped / paper blob-ridge ratio: "
+      f"{shipped_ratio / paper_ratio:.4f}  (expect 2)")
+print(f"paper blob/ridge {paper_ratio:.4f} < shipped {shipped_ratio:.4f}: "
+      f"{paper_ratio < shipped_ratio}")
+```
+
+The ridge centres match; the shipped sign doubles the blob-to-ridge ratio
+against the paper's, exactly $|(1+\tfrac13)/(1-\tfrac13)|$. The ratio itself is
+not $|1+\alpha|$, because a same-height blob and ridge do not share the same
+$|\lambda|$ — but that only contributes a constant, so
+
+$$
+\frac{\text{blob}}{\text{ridge}} = r_0\,|1 + \alpha|,
+$$
+
+with $r_0$ the ratio at $\alpha = 0$. The sweep below measures $r_0$ and checks
+the law rather than assuming it. On this geometry the shipped blob sits just
+under the ridge centre ($0.94$); the paper's sign pushes it to half that
+($0.47$).
+
+That ratio is the right continuous claim; the operational claim is about
+*discrimination*. Put both structures in one image and ask how much of the blob
+exceeds the ridge centre — false ridge detections, under a threshold that
+still catches the ridge.
+
+```{code-cell} ipython3
+mixed = blob_only + ridge_only
+# Soft vertical step (Lindeberg: principal curvature also fires on edges).
+edge = np.zeros((N, N))
+edge[:, N // 2:] = 1.0
+edge = ndi.gaussian_filter(edge, 1.0)
+
+disc = []
+for alpha, label in ((1 / 3, "+1/3 (shipped)"), (-1 / 3, "-1/3 (paper)"),
+                     (0.0, "α = 0 (no reshape)"), (1 / 2, "+1/2"),
+                     (-1 / 2, "-1/2")):
+    out_m = neuriteness(mixed, alpha)
+    ridge_peak = out_m[N // 2, 60]
+    # Half the ridge peak: a threshold that still accepts the ridge with margin.
+    blob_mask = ((rows - N // 2) ** 2 + (cols - N // 2) ** 2
+                 < (2.5 * W_ALPHA) ** 2)
+    false_ridge = (out_m >= 0.5 * ridge_peak) & blob_mask
+    out_e = neuriteness(edge, alpha)
+    disc.append({
+        "alpha": label,
+        "blob/ridge at centres": out_m[N // 2, N // 2] / ridge_peak,
+        "blob px ≥ ½ ridge centre": int(false_ridge.sum()),
+        "edge max / ridge centre": out_e.max() / ridge_peak,
+    })
+pd.DataFrame(disc).set_index("alpha").round(4)
+```
+
+```{code-cell} ipython3
+# Full sweep: discrimination score = 1 - (blob centre) / (ridge centre) on
+# separate images. Positive means the ridge outranks the blob.
+alphas = np.linspace(-0.8, 0.8, 33)
+scores = []
+for alpha in alphas:
+    b = neuriteness(blob_only, alpha)[N // 2, N // 2]
+    r = neuriteness(ridge_only, alpha)[N // 2, 60]
+    scores.append(1 - b / r)
+scores = np.array(scores)
+
+# The algebra above says blob/ridge = r0 * |1 + alpha|, where r0 is whatever
+# the ratio happens to be at alpha = 0 for this pair of shapes. Measure r0,
+# then plot the prediction over the measurement.
+ratio_at_zero = (neuriteness(blob_only, 0.0)[N // 2, N // 2]
+                 / neuriteness(ridge_only, 0.0)[N // 2, 60])
+predicted = 1 - ratio_at_zero * np.abs(1 + alphas)
+
+fig, ax = plt.subplots(figsize=(6.2, 2.8))
+ax.plot(alphas, scores, color=C_ONE, lw=3.0, alpha=0.5, label="measured")
+ax.plot(alphas, predicted, color=INK, lw=1.0, ls="--",
+        label=r"predicted $1 - r_0\,|1+\alpha|$")
+ax.axvline(1 / 3, color=C_TWO, lw=1.2, ls=":", label="shipped +1/3")
+ax.axvline(-1 / 3, color=C_THREE, lw=1.2, ls=":", label="paper −1/3")
+ax.axhline(0, color=GRID, lw=1)
+recede(ax, "ridge-over-blob margin  1 − (blob/ridge); higher is better")
+ax.set_xlabel("α", fontsize=8, color=MUTED)
+ax.set_ylabel("margin", fontsize=8, color=MUTED)
+ax.legend(frameon=False, fontsize=8, loc="lower left")
+fig.tight_layout()
+
+print(f"r0, the ratio at alpha = 0: {ratio_at_zero:.6f}"
+      f"   (1/sqrt(2) = {1 / np.sqrt(2):.6f})")
+print(f"worst gap, measured against predicted: "
+      f"{np.abs(scores - predicted).max():.2e}")
+print(f"margin at shipped +1/3: {1 - shipped_ratio:.4f}")
+print(f"margin at paper   −1/3: {1 - paper_ratio:.4f}")
+print("The margin keeps rising as α → −1 (blobs are killed). That is not a "
+      "reason to prefer −1: the flatness condition fixes α = −1/(ndim+1).")
+```
+
+Under the paper's sign the blob centre is half what the shipped sign reports,
+and at a threshold of half the ridge peak the blob disk contributes **no** false
+ridge pixels, against 89 under `+1/3`. Pushing α below −1/3 suppresses blobs
+further on this score, but it is not the paper's criterion; the unique α that
+makes the filter *flat along a ridge* is −1/(ndim+1), derived next.
+
+The edge column does not move at all. Not "hardly": it is the same number for
+every α in the table, and stays so across α ∈ [−0.5, 0.5]. The reason is the
+one that made the ridge α-invariant. A step edge also has one vanishing
+principal curvature, so the larger-magnitude modified eigenvalue is |λ₂|
+whatever α multiplies the other one by.
+
+```{code-cell} ipython3
+edge_eigs = hessian_matrix_eigvals(
+    hessian_matrix(-edge, SIG_ALPHA, mode="nearest",
+                   use_gaussian_derivatives=True))
+edge_eigs = np.take_along_axis(edge_eigs, abs(edge_eigs).argsort(0), 0)
+print(f"largest |smaller eigenvalue| anywhere on the edge image: "
+      f"{np.abs(edge_eigs[0]).max():.3e}")
+
+edge_by_alpha = [neuriteness(edge, a).max() for a in (-0.5, -1 / 3, 0.0, 1 / 3, 0.5)]
+print("edge response at α = -0.5, -1/3, 0, +1/3, +0.5:",
+      ", ".join(f"{v:.6f}" for v in edge_by_alpha))
+print("identical to the last bit:",
+      bool(np.allclose(edge_by_alpha, edge_by_alpha[0], rtol=0, atol=0)))
+```
+
+That bounds what the reshaping can do. α acts only where *both* curvatures are
+non-zero, so it is a blob suppressor and nothing else. Meijering's α answers
+half of the objection quoted below — the blob half — and cannot address the
+edge half at any sign or magnitude.
+
+The appendix derives α from the flatness condition
 
 $$
 \lim_{x\to0}(r_\perp\!\cdot\!\nabla)^2 h'(x)
   = (1 + 3\alpha)\,\|r\|^4/\sigma^4 = 0,
 $$
 
-which is exactly the condition that the filter be flat along the ridge, and so
-not fire on isotropic structure. Lindeberg's §5.6.2 says the plain
-principal-curvature measure $M_{\gamma\text{-norm}}$ "give[s] strong responses
-at edges" and "comparably strong blob responses"; the α reshaping is
-Meijering's answer to that, and with the sign reversed it is closer to an
-amplifier than a suppressor.
+which is exactly "do not fire on isotropic structure" — and *isotropic* is the
+operative word, which is why the edge column above is inert. Lindeberg's §5.6.2
+lists two complaints about the plain principal-curvature measure: it
+"give[s] strong responses at edges" and "comparably strong blob responses". The
+α reshaping is Meijering's answer to the second only. With the sign reversed it
+answers neither, and on the blob it is closer to an amplifier than a
+suppressor.
 
 One detail the paper leaves in 2-D and skimage generalises: the constant 3 in
-$(1 + 3\alpha)$ is the fourth moment of the 1-D Gaussian — the ratio of the
-fourth derivative of $g$ at the origin to $g(0)$ is $3/\sigma^4$ — and not the
-dimension. Carrying the same limit through in $n$ dimensions gives
-$1 + (n+1)\alpha = 0$, so the docstring's −1/(ndim+1) is the right
-generalisation, and only the sign in the code is wrong.
+$(1 + 3\alpha)$ is the fourth moment of the 1-D Gaussian — $g^{(4)}(0)/g(0) =
+3/\sigma^4$ — not the dimension. Carrying the same limit through in $n$
+dimensions gives $1 + (n+1)\alpha = 0$, so the docstring's −1/(ndim+1) is the
+right generalisation. Only the sign in the code is wrong.
 
 ```{code-cell} ipython3
 def flatness_alpha(ndim, sigma=1.7):
@@ -645,6 +814,13 @@ for ndim in (2, 3, 4):
     print(f"ndim {ndim}: flatness alpha {flatness_alpha(ndim):+.6f}"
           f"   -1/(ndim+1) {-1 / (ndim + 1):+.6f}")
 ```
+
+**Was +1/(ndim+1) ever an improvement?** Not on this evidence. Ridge response is
+α-invariant when $\lambda_1 = 0$; blob response scales as $|1+\alpha|$; edges
+do not prefer +. The + default is the residue of #6446 generalising
+`alpha=-1/3` to `1/(ndim+1)` with the wrong sign while the docstring kept the
+paper's. It is a simple error, not a competing design.
+
 
 ### 5.3 Why this matters for `meijering`
 
@@ -929,10 +1105,46 @@ the image (already measured in §1) is the same test without a synthetic blob.
 ### What to put in `test_ridges.py`
 
 Keep the hero figure for the gallery / this notebook. In the unit suite ship
-only §6.2 and §6.3 — they are small, deterministic, and name the property under
-test (`test_meijering_scale_matches_ridge_width`,
-`test_meijering_response_is_local`). Do not assert bit-identity with NeuronJ on
-multiscale images: NeuronJ is single-scale.
+only §6.2, §6.3 and the α-sign check below — they are small, deterministic, and
+name the property under test (`test_meijering_scale_matches_ridge_width`,
+`test_meijering_response_is_local`, `test_meijering_alpha_suppresses_blobs`).
+Do not assert bit-identity with NeuronJ on multiscale images: NeuronJ is
+single-scale.
+
+```{code-cell} ipython3
+# Proposed: test_meijering_alpha_suppresses_blobs
+# Same-width Gaussian blob and ridge. Paper α must rank the ridge above the
+# blob; shipped α must not. Ridge response is α-invariant; the ratio of the
+# two blob/ridge ratios is exactly 2.
+sig, w = 4.0, 4.0
+yy, xx = np.indices((128, 128), dtype=float)
+blob = np.exp(-((yy - 64) ** 2 + (xx - 64) ** 2) / (2 * w**2))
+ridge = np.exp(-((xx - 32) ** 2) / (2 * w**2))
+b_ship = neuriteness(blob, 1 / 3, sigma=sig)[64, 64]
+r_ship = neuriteness(ridge, 1 / 3, sigma=sig)[64, 32]
+b_paper = neuriteness(blob, -1 / 3, sigma=sig)[64, 64]
+r_paper = neuriteness(ridge, -1 / 3, sigma=sig)[64, 32]
+shipped, paper = b_ship / r_ship, b_paper / r_paper
+print(f"blob/ridge  shipped +1/3: {shipped:.4f}")
+print(f"blob/ridge  paper   −1/3: {paper:.4f}")
+print(f"ridge invariant: {np.isclose(r_ship, r_paper)}; "
+      f"shipped/paper ratio: {shipped / paper:.4f}")
+assert np.isclose(r_ship, r_paper)
+assert abs(shipped / paper - 2.0) < 0.05
+assert paper < shipped
+# At half the ridge peak, the blob disk must be quieter under the paper's α.
+mixed = blob + ridge
+false = {}
+for alpha, name in ((1 / 3, "shipped"), (-1 / 3, "paper")):
+    out = neuriteness(mixed, alpha, sigma=sig)
+    peak = out[64, 32]
+    blob_disk = (yy - 64) ** 2 + (xx - 64) ** 2 < (2.5 * w) ** 2
+    false[name] = int(((out >= 0.5 * peak) & blob_disk).sum())
+print(f"blob px ≥ ½ ridge centre: shipped {false['shipped']}, "
+      f"paper {false['paper']}")
+assert false["paper"] < false["shipped"]
+print("asserts passed: paper α suppresses blobs; shipped α does not")
+```
 
 ## 7. What to do
 

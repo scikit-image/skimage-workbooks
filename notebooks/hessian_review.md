@@ -265,7 +265,7 @@ Two approximations that differ tell you only that at least one is wrong. To say
 which, we need a reference computed a third way, decided before any method is
 put on trial.
 
-There are two available, and they check each other.
+There are four available, and they check each other.
 
 ### 3.1 A closed form, for images made of Gaussians
 
@@ -287,15 +287,16 @@ def analytic_hessian(sigma):
 INTERIOR = slice(35, -35)
 
 
-def error_against(computed, truth):
-    """Worst disagreement over the three entries, away from the border."""
+def error_against(computed, truth, region=INTERIOR):
+    """Worst disagreement over the three entries, on a shared interior."""
     scale = max(np.abs(e).max() for e in truth)
-    return max(np.abs(a[INTERIOR, INTERIOR] - b[INTERIOR, INTERIOR]).max()
+    return max(np.abs(a[region, region] - b[region, region]).max()
                for a, b in zip(computed, truth)) / scale
 ```
 
 This is exact but narrow: it holds only for images we construct, and a method
-could in principle do well on a smooth blob and badly on a photograph.
+could in principle do well on a smooth blob and badly on a photograph. The
+construction below widens it without leaving the closed form.
 
 ### 3.2 Supersampling, for any image
 
@@ -332,22 +333,39 @@ def gold_hessian(image, sigma, factor=4, mode="nearest"):
     # `ndimage` and `numpy.pad` spell the same rules differently.
     pad_mode = {"nearest": "edge", "reflect": "symmetric", "mirror": "reflect",
                 "wrap": "wrap", "constant": "constant"}[mode]
-    pad = int(np.ceil(8 * sigma)) + 2
-    fine = upsample(np.pad(image, pad, mode=pad_mode), factor)
+    # `resample` reconstructs from the DFT, so it reads its input as periodic.
+    # The padded array is a whole number of periods only when each axis is
+    # padded by half its length; any other amount leaves a wrap-around step,
+    # and the ringing from that is a floor `factor` cannot lower.
+    pads = [n // 2 for n in image.shape]
+    if min(pads) < 8 * sigma + 2:
+        raise ValueError("image too small at this sigma: the kernel would "
+                         "reach the crop")
+    fine = upsample(np.pad(image, [(p, p) for p in pads], mode=pad_mode), factor)
     elems = [ndi.gaussian_filter(fine, factor * sigma, order=order, mode=mode,
                                  truncate=8)
              for order in ([2, 0], [1, 1], [0, 2])]
     coarse = [(e[::factor, ::factor] * factor**2) for e in elems]
-    return [e[pad:-pad, pad:-pad] for e in coarse]
+    return [e[pads[0]:-pads[0], pads[1]:-pads[1]] for e in coarse]
 ```
 
-Two details in that function are not decoration. The image is padded **once**,
-before anything else happens, so the boundary rule is applied a single time —
-any reference that extends the image more than once is measuring its own
-artefacts. And the padding clears the kernel, so the crop never sees an edge.
+Three details in that function are not decoration. The image is padded
+**once**, before anything else happens, so the boundary rule is applied a single
+time — any reference that extends the image more than once is measuring its own
+artefacts. The padding clears the kernel, so the crop never sees an edge. And
+the pad is half the image on each axis rather than a multiple of `sigma`,
+because the resampler reads its input as periodic: that is the amount which
+makes the padded array a whole number of periods.
+
 The fine-grid derivatives still use SciPy's uncorrected `order=2` kernels; at
 `factor * sigma` those kernels are already well sampled (section 5), so the
 yardstick is not carrying the small-sigma leak it is used to judge.
+
+The reference therefore has two error sources, and only one of them answers to
+`factor`. Refinement controls how well the fine-grid kernels are sampled.
+Reconstruction — whether the padded array really is periodic — does not move
+with `factor` at all, so a convergence check in `factor` alone cannot see it.
+Section 3.6 measures both against an image whose exact answer is known.
 
 ### 3.3 The two standards agree
 
@@ -368,8 +386,16 @@ show_table(pd.DataFrame(rows))
 ```
 
 At `k = 4` the reference reproduces the closed form to the printed precision at
-every scale, and refining further changes nothing. So `k = 4` is enough, and the
-reference is trustworthy on images with no closed form.
+every scale, and refining further changes nothing. So `k = 4` is enough *on this
+image*.
+
+It is tempting to read that as trustworthiness on images with no closed form,
+and that step does not follow. Convergence in `k` tests one of the two things
+that can go wrong — how well the fine-grid kernels are sampled — and a Gaussian
+blob is the shape least able to expose the other, because it has decayed to
+nothing before it reaches the border where the padding acts. Section 3.6 puts
+the same reference on an image that does reach the border and finds an error
+`k` cannot touch.
 
 The `k = 1` column is worth a second look, because it is not a reference at all:
 it is route B computed directly on the original grid, with no refinement. At
@@ -377,8 +403,479 @@ it is route B computed directly on the original grid, with no refinement. At
 sign of the problem section 5 is about, and it appears here as a control rather
 than as a claim.
 
-From here on, **the standard** means `gold_hessian` at `k = 4`, and every
-comparison is against it.
++++
+
+### 3.4 A gallery of Gaussians, still closed form
+
+The single blob is exact and thin. The band-limited yardstick is general and
+approximate. Between them sits a compromise that keeps the algebra and widens
+the image: a sum of Gaussian blobs and axis-aligned ridges of **several
+widths**, placed well inside the frame so the border never enters the
+comparison.
+
+The Hessian is linear, and each Gaussian stays a Gaussian under smoothing, so
+
+$$
+H\bigl(G_\sigma * \textstyle\sum_i w_i\,f_i\bigr)
+=
+\sum_i w_i\,
+H\bigl(G_\sigma * f_i\bigr),
+$$
+
+with each term known in closed form: an isotropic blob of width $s$ becomes one
+of width $\sqrt{s^2+\sigma^2}$, and a ridge that is constant along one axis
+smooths as a one-dimensional Gaussian along the other. No fit, no
+supersampling — only placement far enough from the edge that
+`mode='nearest'` cannot matter on the interior we score.
+
+```{code-cell} ipython3
+SCENE_N = 201
+SCENE_MARGIN = 50          # centres stay this far from every edge
+SCENE_INTERIOR = slice(SCENE_MARGIN, -SCENE_MARGIN)
+si, sj = np.indices((SCENE_N, SCENE_N), dtype=float)
+
+
+def blob_image(center, width, weight=1.0):
+    """Unit-integral isotropic Gaussian, times `weight`."""
+    ci, cj = center
+    r2 = (si - ci) ** 2 + (sj - cj) ** 2
+    return weight * np.exp(-r2 / (2 * width**2)) / (2 * np.pi * width**2)
+
+
+def ridge_image(axis, center, width, weight=1.0):
+    """Unit-integral 1-D Gaussian along `axis` (0 = rows, 1 = columns)."""
+    coord = si if axis == 0 else sj
+    return weight * np.exp(-((coord - center) ** 2) / (2 * width**2)) / (
+        np.sqrt(2 * np.pi) * width)
+
+
+def blob_hessian(center, width, sigma, weight=1.0):
+    """Closed-form Hessian of a smoothed isotropic blob."""
+    t2 = width**2 + sigma**2
+    ci, cj = center
+    di, dj = si - ci, sj - cj
+    g = weight * np.exp(-(di**2 + dj**2) / (2 * t2)) / (2 * np.pi * t2)
+    return [g * (di**2 / t2**2 - 1 / t2),
+            g * (di * dj / t2**2),
+            g * (dj**2 / t2**2 - 1 / t2)]
+
+
+def ridge_hessian(axis, center, width, sigma, weight=1.0):
+    """Closed-form Hessian of a smoothed axis-aligned ridge."""
+    t2 = width**2 + sigma**2
+    coord = si if axis == 0 else sj
+    d = coord - center
+    g = weight * np.exp(-(d**2) / (2 * t2)) / (np.sqrt(2 * np.pi * t2))
+    curv = g * (d**2 / t2**2 - 1 / t2)
+    zero = np.zeros_like(g)
+    if axis == 0:                                 # varies along rows
+        return [curv, zero, zero]
+    return [zero, zero, curv]                     # varies along columns
+
+
+def render_scene(parts):
+    """Sum the continuous pieces onto the integer grid."""
+    image = np.zeros((SCENE_N, SCENE_N), dtype=float)
+    for part in parts:
+        kind = part["kind"]
+        if kind == "blob":
+            image += blob_image(part["center"], part["width"], part["weight"])
+        else:
+            image += ridge_image(part["axis"], part["center"],
+                                 part["width"], part["weight"])
+    return image
+
+
+def analytic_scene_hessian(parts, sigma):
+    """Exact Hessian of the smoothed scene, term by term."""
+    acc = [np.zeros((SCENE_N, SCENE_N)),
+           np.zeros((SCENE_N, SCENE_N)),
+           np.zeros((SCENE_N, SCENE_N))]
+    for part in parts:
+        if part["kind"] == "blob":
+            terms = blob_hessian(part["center"], part["width"],
+                                 sigma, part["weight"])
+        else:
+            terms = ridge_hessian(part["axis"], part["center"],
+                                  part["width"], sigma, part["weight"])
+        for a, t in zip(acc, terms):
+            a += t
+    return acc
+```
+
+One working scene: four blobs of different width, one vertical ridge, one
+horizontal ridge. Every centre is at least `SCENE_MARGIN` pixels from the edge.
+
+```{code-cell} ipython3
+SCENE = (
+    {"kind": "blob", "center": (70, 70), "width": 2.0, "weight": 1.0},
+    {"kind": "blob", "center": (70, 130), "width": 3.5, "weight": 1.2},
+    {"kind": "blob", "center": (130, 70), "width": 5.0, "weight": 0.8},
+    {"kind": "blob", "center": (130, 130), "width": 7.0, "weight": 1.0},
+    {"kind": "ridge", "axis": 1, "center": 100, "width": 2.5, "weight": 0.6},
+    {"kind": "ridge", "axis": 0, "center": 100, "width": 4.0, "weight": 0.5},
+)
+scene = render_scene(SCENE)
+
+# A one-blob crop of the same machinery, for the single-Gaussian check below.
+SOLO = ({"kind": "blob", "center": (SCENE_N // 2, SCENE_N // 2),
+         "width": BLOB_S, "weight": 1.0},)
+solo = render_scene(SOLO)
+```
+
+```{code-cell} ipython3
+fig, axes = plt.subplots(1, 3, figsize=(10.5, 3.2))
+show(axes[0], scene, "collection (blobs + ridges)")
+show(axes[1], analytic_scene_hessian(SCENE, 2.0)[0],
+     r"analytic $H_{ii}$ at $\sigma = 2$", diverging=True)
+show(axes[2], analytic_scene_hessian(SCENE, 2.0)[2],
+     r"analytic $H_{jj}$ at $\sigma = 2$", diverging=True)
+fig.suptitle("closed-form Hessian on a multi-Gaussian scene "
+             f"(margin {SCENE_MARGIN} px)", y=1.04)
+fig.tight_layout()
+```
+
+The left panel is the input that `hessian_matrix` will see. The other two are
+not approximations: they are the algebra evaluated on the grid. Narrow
+structures dominate $H$ at this scale; the wide blob at bottom-right is already
+mild.
+
+A few more layouts, so the construction is clearly a family rather than one
+picture.
+
+```{code-cell} ipython3
+VARIANTS = {
+    "blobs only": (
+        {"kind": "blob", "center": (70, 80), "width": 2.0, "weight": 1.0},
+        {"kind": "blob", "center": (100, 120), "width": 4.0, "weight": 1.0},
+        {"kind": "blob", "center": (140, 90), "width": 6.5, "weight": 1.0},
+    ),
+    "ridges only": (
+        {"kind": "ridge", "axis": 1, "center": 80, "width": 2.0, "weight": 0.8},
+        {"kind": "ridge", "axis": 1, "center": 120, "width": 5.0, "weight": 0.8},
+        {"kind": "ridge", "axis": 0, "center": 100, "width": 3.0, "weight": 0.6},
+    ),
+    "mixed, unequal weights": (
+        {"kind": "blob", "center": (90, 90), "width": 3.0, "weight": 2.0},
+        {"kind": "blob", "center": (120, 140), "width": 8.0, "weight": 0.4},
+        {"kind": "ridge", "axis": 0, "center": 70, "width": 2.5, "weight": 1.0},
+        {"kind": "ridge", "axis": 1, "center": 150, "width": 4.0, "weight": 0.7},
+    ),
+}
+
+fig, axes = plt.subplots(1, 3, figsize=(10.5, 3.2))
+for ax, (name, parts) in zip(axes, VARIANTS.items()):
+    show(ax, render_scene(parts), name)
+fig.suptitle("other placements: still a sum of Gaussians inside the margin",
+             y=1.04)
+fig.tight_layout()
+```
+
++++
+
+### 3.5 How the four standards relate
+
+Three checks for the closed forms and the supersampler, in order of what they
+pin down. The fourth standard — the DCT continuous Gaussian — follows in §3.6.
+
+**Single blob recovers the old closed form.** The gallery machinery, restricted
+to one centred blob of width `BLOB_S`, must match `analytic_hessian` on the
+shared interior of the smaller grid — otherwise the generalisation is wrong
+before any method is judged.
+
+```{code-cell} ipython3
+# Evaluate the scene analytic on the solo image's grid geometry by cropping
+# the centred SCENE_N blob down to BLOB_N, matching `blob` / `analytic_hessian`.
+half = BLOB_N // 2
+mid = SCENE_N // 2
+crop_solo = slice(mid - half, mid - half + BLOB_N)
+rows = []
+for sigma in (0.5, 1.0, 2.0, 4.0):
+    from_scene = [e[crop_solo, crop_solo]
+                  for e in analytic_scene_hessian(SOLO, sigma)]
+    from_blob = analytic_hessian(sigma)
+    rows.append({
+        "sigma": sigma,
+        "max |scene − blob analytic| / scale":
+            f"{error_against(from_scene, from_blob):.2e}",
+        "max |solo image − blob|":
+            f"{np.abs(solo[crop_solo, crop_solo] - blob).max():.2e}",
+    })
+show_table(pd.DataFrame(rows))
+```
+
+**Band-limited sampling tracks the multi-Gaussian analytic.** On the full
+scene, `gold_hessian` at rising refinement should approach the closed form, as
+it did for the single blob in §3.3 — now with several scales present at once.
+
+```{code-cell} ipython3
+rows = []
+for sigma in (0.5, 1.0, 2.0, 3.0):
+    truth = analytic_scene_hessian(SCENE, sigma)
+    row = {"sigma": sigma}
+    for k in (1, 2, 4):
+        got = gold_hessian(scene, sigma, factor=k)
+        row[f"k = {k}"] = f"{error_against(got, truth, SCENE_INTERIOR):.3%}"
+    rows.append(row)
+show_table(pd.DataFrame(rows))
+```
+
+**What each standard is for.** The single blob is the simplest certificate that
+the algebra and the numerical yardsticks agree. The multi-Gaussian scene is the
+same certificate with mixed widths and ridge geometry — still exact, still
+interior-only. The DCT continuous gold (§3.6) is the band-limited exact answer
+for an arbitrary image under half-sample reflection. The supersampler is what
+remains when the pad mode must match the code under test (`nearest`, and so
+on). On Gaussian scenes these are not competing opinions: the closed forms are
+identities, and both numerical standards converge to them on the interior.
+
+```{code-cell} ipython3
+# At the working refinement, multi-analytic vs gold, and vs the shipped filter.
+rows = []
+for sigma in (0.7, 1.0, 1.5, 2.0, 3.0):
+    truth = analytic_scene_hessian(SCENE, sigma)
+    gold = gold_hessian(scene, sigma, factor=4)
+    shipped = hessian_matrix(scene, sigma=sigma, mode="nearest",
+                             use_gaussian_derivatives=True)
+    rows.append({
+        "sigma": sigma,
+        "gold k=4 vs analytic":
+            f"{error_against(gold, truth, SCENE_INTERIOR):.3%}",
+        "shipped vs analytic":
+            f"{error_against(shipped, truth, SCENE_INTERIOR):.3%}",
+        "shipped vs gold k=4":
+            f"{error_against(shipped, gold, SCENE_INTERIOR):.3%}",
+    })
+show_table(pd.DataFrame(rows))
+```
+
+At `sigma ≥ 1.5` the shipped filter, the supersampler, and the multi-Gaussian
+analytic agree to the printed precision on the interior. Below that they part
+company — and the analytic, not the supersampler, is the one that stays exact,
+which is why the gallery earns its keep next to §3.3.
+
++++
+
+### 3.6 DCT continuous Gaussian (IPOL 2016)
+
+The supersampler approximates continuous convolution by refining the grid.
+[Rey-Otero and Delbracio (IPOL 2016)](https://www.ipol.im/pub/art/2016/117/)
+do the continuous convolution exactly under a stated interpolant (their
+Algorithm 2): type-II DCT of the $M\times N$ image, weight each coefficient
+by
+$\exp\!\bigl(-\tfrac12\sigma^2(\omega_m^2+\omega_n^2)\bigr)$ with
+$\omega_m = \pi m/M$, $\omega_n = \pi n/N$, and invert. Equivalently — their
+§2.2 — DFT of the half-sample even extension of size $2M\times 2N$,
+$\breve u_{k,l} = u_{s_M(k),s_N(l)}$ with $s_M(k)=\min(k,2M-1-k)$, then the
+same Gaussian weights at frequencies $2\pi m/(2M)=\pi m/M$. That is continuous
+Gaussian smoothing of a trigonometric polynomial — no `factor`, no sampled
+$G''$ kernel.
+
+The paper stops at the smoothed field. The Hessian below is the same
+continuous field differentiated: multiply by $-\omega_i\omega_j$ before the
+inverse transform. Pure second derivatives stay in the DCT cosine basis;
+the mixed term needs the sine–sine (DST) partner, so the DFT-of-extension
+form is the convenient one that yields all three entries together.
+
+The extension repeats the edge sample (`[a,b,c,c,b,a]`). That is SciPy /
+scikit-image `mode='reflect'`, not `mirror` (whole-sample, no edge repeat).
+
+```{code-cell} ipython3
+def mirror_symmetrize(image):
+    """Half-sample even extension of IPOL 2016 §2.2 / Algorithm 2."""
+    M, N = image.shape
+    ii = np.minimum(np.arange(2 * M), 2 * M - 1 - np.arange(2 * M))
+    jj = np.minimum(np.arange(2 * N), 2 * N - 1 - np.arange(2 * N))
+    return image[np.ix_(ii, jj)]
+
+
+def dct_hessian(image, sigma):
+    """Hessian of the IPOL DCT-Gaussian continuous scale-space.
+
+    Exact continuous $G_\\sigma * u$ under the DCT interpolant (IPOL Algorithm
+    2), then exact second derivatives of that field. Boundary model is
+    half-sample reflection (`mode='reflect'`), not `nearest` or `mirror`.
+    """
+    M, N = image.shape
+    ext = mirror_symmetrize(image)
+    freqs_i = np.fft.fftfreq(ext.shape[0]) * 2 * np.pi
+    freqs_j = np.fft.fftfreq(ext.shape[1]) * 2 * np.pi
+    wi, wj = np.meshgrid(freqs_i, freqs_j, indexing="ij")
+    Fg = np.fft.fft2(ext) * np.exp(-0.5 * sigma**2 * (wi**2 + wj**2))
+    return [np.fft.ifft2(Fg * (-wi**2)).real[:M, :N],
+            np.fft.ifft2(Fg * (-wi * wj)).real[:M, :N],
+            np.fft.ifft2(Fg * (-wj**2)).real[:M, :N]]
+```
+
+On the single blob it is not an approximation of the closed form — it *is*
+the closed form, to floating point, because a Gaussian well inside the frame
+is unchanged by the even extension on the interior we score.
+
+```{code-cell} ipython3
+rows = []
+for sigma in (0.3, 0.5, 1.0, 2.0, 4.0):
+    rows.append({
+        "sigma": sigma,
+        "dct vs analytic":
+            f"{error_against(dct_hessian(blob, sigma), analytic_hessian(sigma)):.2e}",
+        "gold k=4 vs analytic":
+            f"{error_against(gold_hessian(blob, sigma, factor=4), analytic_hessian(sigma)):.3%}",
+    })
+show_table(pd.DataFrame(rows))
+```
+
+On the multi-Gaussian scene the same: DCT matches the term-by-term analytic;
+the supersampler only catches up once `k` is large enough that SciPy's kernels
+are well sampled.
+
+```{code-cell} ipython3
+rows = []
+for sigma in (0.5, 0.7, 1.0, 2.0):
+    truth = analytic_scene_hessian(SCENE, sigma)
+    rows.append({
+        "sigma": sigma,
+        "dct vs analytic":
+            f"{error_against(dct_hessian(scene, sigma), truth, SCENE_INTERIOR):.2e}",
+        "gold k=4 vs analytic":
+            f"{error_against(gold_hessian(scene, sigma, factor=4), truth, SCENE_INTERIOR):.3%}",
+        "gold k=4 vs dct":
+            f"{error_against(gold_hessian(scene, sigma, factor=4), dct_hessian(scene, sigma), SCENE_INTERIOR):.3%}",
+    })
+show_table(pd.DataFrame(rows))
+```
+
+Those two tables are agreement on images built from Gaussians, and a Gaussian
+decays to nothing at the frame edge. That is the one shape for which the
+supersampler's padding cannot misbehave, so the tables above cannot separate
+the two references. A test that can: a single DCT-II basis function, which is
+*exactly* band-limited, so the model both references assume is not an
+approximation but a fact, and whose smoothed Hessian is known in closed form.
+
+For $u_{k,l} = \cos a(k+\tfrac12)\cos b(l+\tfrac12)$ with $a = \pi m/M$,
+$b = \pi n/N$, smoothing multiplies by $E = e^{-\sigma^2(a^2+b^2)/2}$ and
+
+$$
+\partial_{xx} = -a^2 E u, \qquad
+\partial_{xy} = ab\,E \sin a(k+\tfrac12)\sin b(l+\tfrac12), \qquad
+\partial_{yy} = -b^2 E u .
+$$
+
+```{code-cell} ipython3
+BAND_N = 128
+bk, bl = np.indices((BAND_N, BAND_N), dtype=float)
+
+
+def band_limited(m, n, sigma):
+    """A DCT-II basis image, and the exact Hessian of its smoothing."""
+    a, b = np.pi * m / BAND_N, np.pi * n / BAND_N
+    ca, cb = np.cos(a * (bk + 0.5)), np.cos(b * (bl + 0.5))
+    u = ca * cb
+    damp = np.exp(-0.5 * sigma**2 * (a**2 + b**2))
+    return u, [-a * a * damp * u,
+               a * b * damp * np.sin(a * (bk + 0.5)) * np.sin(b * (bl + 0.5)),
+               -b * b * damp * u]
+
+
+BAND_INTERIOR = slice(30, -30)
+rows = []
+for m, n in ((8, 12), (48, 32), (100, 90), (120, 118)):
+    for sigma in (0.5, 1.0):
+        u, truth = band_limited(m, n, sigma)
+        rows.append({
+            "m, n": f"({m}, {n})",
+            "freq / Nyquist": f"{max(m, n) / BAND_N:.2f}",
+            "sigma": sigma,
+            "dct": f"{error_against(dct_hessian(u, sigma), truth, BAND_INTERIOR):.1e}",
+            "gold k=4": f"{error_against(gold_hessian(u, sigma, factor=4, mode='reflect'), truth, BAND_INTERIOR):.1e}",
+            "gold k=8": f"{error_against(gold_hessian(u, sigma, factor=8, mode='reflect'), truth, BAND_INTERIOR):.1e}",
+        })
+show_table(pd.DataFrame(rows))
+```
+
+Both are exact at every frequency, to $10^{-12}$ or better at 94% of Nyquist.
+That is the validation the Gaussian tables could not give: the two references
+share a model but no code — one weights transform coefficients, the other
+reconstructs on a finer grid and differentiates with sampled kernels — and they
+agree with a closed form neither was built from.
+
+What makes the supersampler exact here is the periodic padding of section 3.2,
+and that is worth demonstrating rather than asserting, because the obvious
+choice of pad is not periodic. Pad just enough to clear the kernel and the
+reference develops an error that refinement cannot touch.
+
+```{code-cell} ipython3
+def gold_with_pad(image, sigma, factor, pad, mode="reflect"):
+    """`gold_hessian` with the pad forced, to isolate the reconstruction error."""
+    fine = upsample(np.pad(image, pad, mode="symmetric"), factor)
+    elems = [ndi.gaussian_filter(fine, factor * sigma, order=order, mode=mode,
+                                 truncate=8)
+             for order in ([2, 0], [1, 1], [0, 2])]
+    return [(e[::factor, ::factor] * factor**2)[pad:-pad, pad:-pad]
+            for e in elems]
+
+
+u, truth = band_limited(120, 118, 1.0)          # 0.94 of Nyquist
+scan = {"vary factor, pad = 10":
+            {f"factor={k}": f"{error_against(gold_with_pad(u, 1.0, k, 10), truth, BAND_INTERIOR):.1e}"
+             for k in (2, 4, 8, 16)},
+        "vary pad, factor = 4":
+            {f"pad={p}": f"{error_against(gold_with_pad(u, 1.0, 4, p), truth, BAND_INTERIOR):.1e}"
+             for p in (10, 20, 96, BAND_N // 2, BAND_N)}}
+show_table(pd.DataFrame(scan["vary factor, pad = 10"], index=["error"]))
+show_table(pd.DataFrame(scan["vary pad, factor = 4"], index=["error"]))
+```
+
+Four refinements, one number: at a pad of 10 the error sits at $8\times10^{-3}$
+whether the grid is refined twice or sixteen times. Then the pad moves it by ten
+orders of magnitude — and `pad = 96` is *worse* than `pad = 64`, so this is not
+a matter of padding more. `resample` reconstructs from the DFT, so it reads its
+input as periodic; only a pad of half the image, or a whole multiple of that,
+makes the padded array a whole number of periods of the symmetric extension.
+Half the image is the smallest that works, and is what section 3.2 uses. With
+it, the supersampler and the DCT agree to floating point on a photograph too.
+
+```{code-cell} ipython3
+# The photograph of section 6, brought forward: a real image is the case the
+# Gaussian scenes cannot stand in for.
+CAMERA = ski.util.img_as_float(ski.data.camera())[::2, ::2]
+
+rows = []
+for sigma in (0.5, 1.0, 2.0):
+    rows.append({
+        "sigma": sigma,
+        "gold k=4 vs dct, camera interior":
+            f"{error_against(gold_hessian(CAMERA, sigma, factor=4, mode='reflect'), dct_hessian(CAMERA, sigma), slice(40, -40)):.1e}",
+    })
+show_table(pd.DataFrame(rows))
+```
+
+That agreement is the real validation of both. They are built on the same
+band-limited model but share no code: one reconstructs on a finer grid and
+differentiates with sampled kernels, the other weights coefficients in a
+transform. Agreeing to $10^{-14}$ on a photograph is evidence neither is
+carrying an artefact of its own.
+
+**When to use which.** `dct_hessian` is the primary standard. It is exact
+rather than convergent, it has no refinement parameter whose adequacy has to be
+argued, it satisfies the semi-group property to machine precision — which is
+the criterion Rey-Otero and Delbracio use — and it costs one pair of transforms
+instead of `factor**2` of everything. Use it for every interior score, at any
+`mode`, and for border scores when the method under test uses `mode='reflect'`.
+
+`gold_hessian` is kept for the one thing the DCT cannot do: score the border
+under a boundary rule that is not half-sample reflection. `hessian_matrix`
+itself defaults to `mode='constant'`, and the methods compared in sections 6 to
+8 run at `mode='nearest'`, so that is not a hypothetical — section 8 is entirely
+supersampler work. For images built as sums of Gaussians the closed form of
+§3.1 / §3.4 remains the simplest exact answer, and is the only one of the three
+that does not assume the image is band-limited.
+
+That last point is worth keeping in view. The DCT and the supersampler are not
+independent: both model the image as a trigonometric polynomial, so their
+agreement is a check on implementation, not on the model. The closed form is
+what tests the model, and it only exists for images we construct. On a
+photograph the band-limited assumption is an assumption, and no measurement in
+this notebook can discharge it.
 
 ## 4. Why the library moved from differences to Gaussian derivatives
 
@@ -390,7 +887,7 @@ SCALES = (0.4, 0.5, 0.7, 1.0, 1.5, 2.0, 3.0, 5.0)
 
 rows = []
 for sigma in SCALES:
-    truth = gold_hessian(blob, sigma)
+    truth = dct_hessian(blob, sigma)        # interior score, so the exact one
     rows.append({
         "sigma": sigma,
         "route A, differences": f"{error_against(route_a(blob, sigma), truth):.2%}",
@@ -431,7 +928,18 @@ is why route A's column is flat.
 This is the case for the switch, and `hessian_matrix` has a
 `use_gaussian_derivatives` argument that makes it, with a `FutureWarning`
 announcing that route B will become the default. Above `sigma = 1` the argument
-is unanswerable — route B is exact where route A is wrong by 4%.
+is unanswerable — route B is within a tenth of a percent where route A is wrong
+by 2 to 5%, a gap of nearly two orders of magnitude that does not close at any
+scale.
+
+Route B's residual is not zero, and it is worth saying why it now shows. The
+standard here is the DCT, which shares no machinery with either route. The
+supersampled reference would have flattered route B, because it computes its own
+fine-grid derivatives with the same SciPy kernels route B uses on the coarse
+grid, so part of route B's error is present in that reference too and cancels.
+An independent standard does not cancel it. The number is small either way; the
+point is that a reference built from the method under test cannot measure the
+method under test.
 
 Below `sigma = 1` it reverses, and badly. That is the next section.
 
@@ -1028,19 +1536,29 @@ moves when `mode` changes has a defect that has nothing to do with boundaries.
 That makes it a useful probe, and the three methods answer it differently.
 
 The standard has to be computed in the matching mode, or the comparison
-measures the mismatch. It is stable enough to referee in all five.
+measures the mismatch. This is the section the DCT cannot referee: its boundary
+rule is half-sample reflection by construction, so four of these five are out of
+its reach and the supersampler does the work.
+
+The check below is refinement stability, which section 3.6 showed is a partial
+test — it sees the fine-grid kernels and not the reconstruction. It is reported
+here for what it is; what makes the reference sound at the border is the
+periodic padding of section 3.2, and the agreement with the DCT at `reflect`.
 
 ```{code-cell} ipython3
 MODES = ("nearest", "reflect", "mirror", "wrap", "constant")
 
 rows = []
 for mode in MODES:
-    coarse = gold_hessian(PHOTO, 1.5, factor=4, mode=mode)
-    finer = gold_hessian(PHOTO, 1.5, factor=8, mode=mode)
+    coarse = gold_hessian(PHOTO, 1.5, factor=2, mode=mode)
+    finer = gold_hessian(PHOTO, 1.5, factor=4, mode=mode)
     scale = max(np.abs(e).max() for e in finer)
     gap = max(np.abs(a - b).max() for a, b in zip(coarse, finer)) / scale
-    rows.append({"mode": mode, "k=4 vs k=8": f"{gap:.1e}"})
-show_table(pd.DataFrame(rows))
+    row = {"mode": mode, "k=2 vs k=4": f"{gap:.1e}"}
+    if mode == "reflect":          # the one mode the exact standard can check
+        row["vs dct"] = f"{error_against(finer, dct_hessian(PHOTO, 1.5), slice(None)):.1e}"
+    rows.append(row)
+show_table(pd.DataFrame(rows).fillna("—"))
 ```
 
 ```{code-cell} ipython3
@@ -1288,15 +1806,33 @@ correction, and it is not a reason to prefer it.
 
 The corrected kernel is not the last word. It fixes the operator at zero
 frequency and leaves a residual that grows toward Nyquist, so at `sigma` well
-below 1 no kernel repair rescues the method — only a larger scale, or a finer
-grid, does. `hessian_matrix_det(approximate=True)` and `blob_doh` route through
+below 1 no kernel repair rescues the method — only a larger scale, a finer
+grid, or a different family of method.
+
+That third option is the one the cited paper argues for, and this notebook has
+been using it as a yardstick without putting it on trial. Rey-Otero and
+Delbracio conclude that "the only method that allows to compute accurately the
+Gaussian scale-space is the Fourier based convolution", and that sampled
+Gaussians are sound only above `sigma` about 0.8 — which is section 7's
+residual, reached independently and four years earlier. `dct_hessian` is not
+merely a standard: it is a candidate implementation, and on the evidence here
+it is the accurate one at every scale.
+
+It is not proposed as the implementation, for reasons this notebook has not
+measured. It is global rather than separable and local, so cost scales as
+`N log N` over the whole image rather than with the kernel, and it cannot
+offer `mode`: the boundary rule is half-sample reflection by construction,
+where callers currently choose among five. Whether a spectral path should exist
+alongside the kernel one, for the small-`sigma` regime where kernels cannot be
+repaired, is a real question and is left open here rather than answered. `hessian_matrix_det(approximate=True)` and `blob_doh` route through
 box filters over integral images and are untouched by any of this; they have
 their own border defect, larger than this one, described in `on_blob_dog.md`.
 And `meijering`'s normalisation needs deciding on its own terms.
 
-Measured with scikit-image from this working tree, on a 121x121 analytic blob
-and the 256x256 `camera` photograph, against a supersampled reference at
-refinement factor 4.
+Measured with scikit-image from this working tree, on a 121×121 analytic blob,
+a 201×201 multi-Gaussian scene (blobs and ridges, closed form), and the
+256×256 `camera` photograph, against the IPOL DCT continuous Hessian and a
+supersampled reference at refinement factor 4.
 
 ```{code-cell} ipython3
 print(f"scikit-image {ski.__version__}")
