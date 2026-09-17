@@ -799,6 +799,12 @@ answer.
 
 ## 9. How to test α
 
+`meijering_alpha_testing.md` takes this section further, and builds a five-test
+suite around a single picture whose dot and line the filter scores alike when
+α is switched off. Each test there is stated as a sentence about that picture,
+and none of them mentions an eigenvalue. What follows is the shorter version,
+in terms of the quantities this notebook has been working with.
+
 Everything above is also a set of instructions for writing a regression test,
 and most of the ways such a test goes wrong are ways of accidentally testing
 something else. The properties worth asserting, and the traps around each:

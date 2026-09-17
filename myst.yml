@@ -15,6 +15,7 @@ project:
     - file: notebooks/on_meijering.md
     - file: notebooks/jerman_vesselness.md
     - file: notebooks/meijering_alpha.md
+    - file: notebooks/meijering_alpha_testing.md
     - file: notebooks/on_hessian.md
     - file: notebooks/bresenham_nd_cython.md
     - file: notebooks/on_lines.md
