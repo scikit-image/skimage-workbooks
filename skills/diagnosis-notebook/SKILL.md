@@ -299,7 +299,15 @@ fourth classes. Run the audit to raise the floor, not to skip the review.
 Rules 5, 6 and 7 apply to any document that mixes measurement with explanation,
 including plans and reviews, not only to notebooks.
 
-## 15. Reflection
+## 15. Look for reference papers in `library`
+
+- `library` is a symlink that may point to local, private copies of the
+  reference papers, describing implementations.  Look there for relevant
+  papers, but do not copy significant text content from those papers, which
+  have specific copyright.  You can reproduce equations, and short quotes, but
+  nothing longer than that.  Do not reproduce figures.
+
+## 16. Reflection
 
 - As you write the notebook, I will give you feedback.
 - When the feedback is me asking for more explanation, there is no need to

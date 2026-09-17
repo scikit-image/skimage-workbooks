@@ -11,8 +11,10 @@ __pycache__/
 # Jupyter Book build products
 _build/
 .jupyter_cache/
-.scratch/
 .skimage-wheels/
+
+# Symlink to local copies of reference papers
+library
 
 # Cython products from notebook-local modules
 *.so

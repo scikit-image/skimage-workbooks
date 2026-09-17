@@ -222,7 +222,10 @@ show_table(pd.DataFrame(rows_scale), index="comparison")
 A third of the pixels differ, and every one of them differs in the last bit or
 two. Scaling the whole image by a hundred does the same nothing. The filter is
 invariant to any positive rescaling of the Hessian, so equation 1's $s^2$ is
-inert *for this enhancement function* and the PR loses nothing by dropping it.
+inert *for this enhancement function* and the PR loses nothing by dropping it —
+on images of ordinary amplitude. Section 3.1 finds the one constant in the
+implementation that breaks this, and the amplitude at which it starts to
+matter.
 
 "For this enhancement function" is the necessary qualifier. Equation 1 is the
 paper's general Hessian, shared with the six established functions it compares
@@ -244,6 +247,102 @@ scikit-image "a third ridge filter with D2". The first half is true and the
 second is wrong: D2 is *about* scale selection, and σ² is not what gives this
 filter scale selection — nothing does, which is the subject of the next
 section.
+
++++
+
+### 3.1 Inert, except through one absolute constant
+
+"Invariant to any positive rescaling" is a statement about equations 13 to 15,
+and the implementation adds something that is not in them. `eigval_tol = 1e-10`
+is an **absolute** floor, used both to clip the eigenvalues
+(`np.maximum(eigvals[1:], eigval_tol)`) and to decide the two special cases of
+equation 15. Every other quantity in the filter is a ratio; this one is not.
+
+So the invariance holds only while the eigenvalues stay clear of $10^{-10}$.
+Multiplying the image is the direct way to find the edge, and the shipped
+filter is not amplitude-invariant even though the paper's formulation is.
+
+```{code-cell} ipython3
+reference = jerman_core(-PHOTO, SIGMAS)[0]
+
+rows_amp = []
+for amplitude in (1e2, 1.0, 1e-2, 1e-4, 1e-5, 1e-6):
+    scaled = jerman_core(-PHOTO * amplitude, SIGMAS)[0]
+    without = jerman_core(-PHOTO * amplitude, SIGMAS, power=0.0)[0]
+    with_s2 = jerman_core(-PHOTO * amplitude, SIGMAS, power=2.0)[0]
+    rows_amp.append({
+        "image ×": f"{amplitude:.0e}",
+        "vs amplitude 1": f"{np.abs(scaled - reference).max():.1e}",
+        "no σ power vs σ²": f"{np.abs(without - with_s2).max():.1e}",
+    })
+show_table(pd.DataFrame(rows_amp), index="image ×")
+```
+
+At amplitude $10^{-2}$ and above both columns are floating-point noise and
+section 3's conclusion holds. Below that they part, and quickly: $5\times10^{-6}$
+at amplitude $10^{-4}$, then $9\times10^{-4}$, then 7.5% at $10^{-6}$ — a filter
+disagreeing with itself by 7.5% purely from a change of units. The σ² question
+stops being moot at the same point, because $\sigma^2$ multiplies the
+eigenvalues by up to 81 at σ = 9 and so lifts a different set of pixels over the
+fixed floor. The two columns move together, which is the signature of a single
+cause.
+
+That is a latent issue in its own right, and it is not about $s^2$. An absolute
+constant inside an otherwise scale-free filter makes the answer depend on the
+units of the input. `img_as_float` puts integer images in $[0, 1]$ and keeps
+most callers a comfortable four orders from the floor, but a float array in
+physical units gets no such protection and no warning. Making the tolerance relative — a small
+multiple of `lambda3.max()`, which the filter already computes — would restore
+the invariance the paper's design implies, and would make the σ² omission
+unconditionally safe rather than safe in practice.
+
++++
+
+### 3.2 An inherited cost the PR does not control
+
+One more thing follows the filter in from `hessian_matrix` rather than from the
+PR, and it is worth knowing because `jerman`'s own default triggers it.
+`_hessian_matrix_with_gaussian` chooses
+
+```python
+truncate = 8 if all(s > 1 for s in sigma) else 100
+```
+
+so any scale at or below σ = 1 is convolved with a kernel truncated at 100
+standard deviations instead of 8. The documented default `sigmas=range(1, 10, 2)`
+starts at exactly 1.
+
+```{code-cell} ipython3
+import scipy.ndimage as ndi_spy
+
+calls = []
+_real_gaussian = ndi_spy.gaussian_filter
+
+
+def _spy(inp, sigma, **kwargs):
+    calls.append((round(float(np.atleast_1d(sigma)[0]), 4), kwargs.get("truncate")))
+    return _real_gaussian(inp, sigma, **kwargs)
+
+
+ndi_spy.gaussian_filter = _spy
+try:
+    jerman_core(-PHOTO, range(1, 10, 2))
+finally:
+    ndi_spy.gaussian_filter = _real_gaussian
+
+show_table(pd.DataFrame(
+    [{"scaled σ passed to gaussian_filter": s, "truncate": t,
+      "kernel radius (px)": int(t * s + 0.5)}
+     for s, t in sorted(set(calls))]))
+```
+
+The finest scale is filtered with a 71-pixel radius where the next one up uses
+17. `on_hessian.md` measures what that buys: nothing detectable — the kernel
+moments are bit-identical to the `truncate=8` ones and the output differs by at
+most $7\times10^{-16}$. It is an inherited cost, not a defect introduced here,
+and it is not in the PR's diff at all — but a reviewer timing the new filter
+against the others should know that its default `sigmas` puts it on the
+expensive branch and the others' defaults do too.
 
 ## 4. Scale-uniform by design, not scale-selecting
 
@@ -508,7 +607,8 @@ from the MATLAB would say so directly rather than by argument.
 | finding | verdict | evidence |
 | --- | --- | --- |
 | faithful transcription of equations 13–15 | yes | §1, exact agreement with the built PR |
-| drops the reference's `c = sigma.^2` | yes, and it is immaterial | §3, differences at $10^{-16}$ |
+| drops equation 1's $s^2$ | yes, immaterial at amplitude $10^{-2}$ and above | §3, differences at $10^{-16}$; §3.1 for the exception |
+| `eigval_tol` is absolute in a ratio-only filter | yes: the output depends on the units of the input | §3.1, 7.5% change at amplitude $10^{-6}$ |
 | scale selection | none, and none intended: the response is scale-uniform by design | §4 |
 | locality | fails, through τ·max(λ₃) — from the paper, not the port | §5, 92% far-field |
 | depends on the order of `sigmas` | no | §5 |
@@ -516,9 +616,15 @@ from the MATLAB would say so directly rather than by argument.
 | bounded output | yes, at the cost of ties across scales | §6 |
 
 The recommendation this supports is narrow. The PR is a correct port of
-equations 13 to 15, and the missing $s^2$ of equation 1 is provably inert for
-this function, so a reviewer should not block on it — but the PR should say so,
-because the next reader will notice the same gap and have to redo the argument.
+equations 13 to 15, and the missing $s^2$ of equation 1 is inert for this
+function wherever the eigenvalues stay clear of `eigval_tol`, so a reviewer
+should not block on it — but the PR should say so, because the next reader will
+notice the same gap and have to redo the argument.
+
+The tolerance itself is the better thing to raise. Making `eigval_tol` relative
+to `lambda3.max()` rather than a fixed $10^{-10}$ costs one line, restores the
+amplitude invariance the paper's formulation has, and turns "the $s^2$ is inert
+in practice" into "the $s^2$ is inert".
 
 The non-locality comes from the published algorithm rather than from the port,
 and `meijering` has shipped with the same property for years, so blocking on it
