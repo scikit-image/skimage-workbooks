@@ -17,6 +17,7 @@ project:
     - file: notebooks/meijering_alpha.md
     - file: notebooks/meijering_alpha_testing.md
     - file: notebooks/on_hessian.md
+    - file: notebooks/hessian_testing.md
     - file: notebooks/bresenham_nd_cython.md
     - file: notebooks/on_lines.md
     - file: notebooks/hessian_review.md

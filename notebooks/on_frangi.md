@@ -5,6 +5,7 @@ jupytext:
     extension: .md
     format_name: myst
     format_version: 0.13
+    jupytext_version: 1.19.5
 kernelspec:
   name: python3
   display_name: Python 3 (ipykernel)
@@ -23,12 +24,14 @@ does, the smallest example that shows the difference, and a runnable repair.
 | D1 | the wrong-sign rejection is defeated when $\lambda_1 = 0$ | `black_ridges` has **no effect** on an ideal ridge | residue of [#6436](https://github.com/scikit-image/scikit-image/issues/6436), not reported |
 | D2 | no scale normalisation on the Hessian | ideal ridges never select their width; non-trivial vesselness collapses to the finest σ | [#7711](https://github.com/scikit-image/scikit-image/issues/7711), open |
 | D3 | `gamma=None` is resolved *inside* the σ loop | output depends on the **order** of `sigmas` | not reported |
-| D4 | `gamma=None` is a whole-image statistic | one distant pixel changes the answer | noted in [#6436](https://github.com/scikit-image/scikit-image/issues/6436) |
+| D4 | `gamma=None` exposes Frangi's whole-image contrast heuristic without documenting its scope | one distant pixel changes the answer | the global $c$ heuristic is in Frangi; the API consequence is noted in [#6436](https://github.com/scikit-image/scikit-image/issues/6436) |
 | D5 | border error from the two-pass Hessian | a bright rim, large relative to the output range | `on_hessian.md`, fixes A and C |
 | D6 | `alpha` is documented but inert in 2-D | a parameter that does nothing, silently | noted in [#6436](https://github.com/scikit-image/scikit-image/issues/6436) |
 
 D3 and D4 are the subject of `on_meijering.md`'s sibling argument: both filters
-take a maximum over scales while letting a whole-image number into the loop.
+let a whole-image number into the loop, but D3 is an order-dependent
+implementation error while D4 exposes a published global contrast heuristic
+without a locality contract.
 D6 is a documentation defect and is dealt with in one paragraph.
 
 Coordinates are in array order throughout. All sections assume 2-D unless they
@@ -92,12 +95,14 @@ width σ, takes the matrix of second derivatives — the Hessian $H$ — and loo
 its eigenvalues $\lambda_1, \lambda_2$, ordered so that
 $|\lambda_1| \le |\lambda_2|$.
 
-For a bright line on a dark background the cross-section curves sharply
-downward and the along-line direction is flat, so
-$\lambda_2 \ll 0$ and $\lambda_1 \approx 0$. For a blob both curve, so
-$\lambda_1 \approx \lambda_2$. [Frangi *et al.*
-(1998)](https://doi.org/10.1007/BFb0056195) turn that into two dimensionless
-numbers and one absolute one:
+This section uses the 2-D specialization of Frangi's filter. For a bright line
+on a dark background the cross-section curves sharply downward and the
+along-line direction is flat, so $\lambda_2 \ll 0$ and $\lambda_1 \approx 0$.
+For a blob both curve, so $\lambda_1 \approx \lambda_2$. In 3-D, the paper
+also uses the third eigenvalue and a plate-sensitivity ratio $R_A$; that factor
+is absent from the 2-D expression below. [Frangi *et al.*
+(1998)](https://doi.org/10.1007/BFb0056195) turn the 2-D case into two
+dimensionless numbers and one absolute one:
 
 $$
 R_b = \frac{|\lambda_1|}{|\lambda_2|}, \qquad
@@ -110,18 +115,24 @@ $$
 \mathcal{V}
 = \underbrace{\exp\!\left(-\frac{R_b^{2}}{2\beta^{2}}\right)}_{\text{blobness}}
 \cdot
-\underbrace{\left(1 - \exp\!\left(-\frac{S^{2}}{2\gamma^{2}}\right)\right)}_{\text{structuredness}} ,
+\underbrace{\left(1 - \exp\!\left(-\frac{S^{2}}{2c^{2}}\right)\right)}_{\text{structuredness}} ,
 $$
 
-with the convention that $\mathcal{V} = 0$ wherever an eigenvalue has the wrong
-sign for the polarity being sought. The final answer is the maximum of
-$\mathcal{V}$ over a list of scales.
+with the convention that $\mathcal{V} = 0$ when the relevant eigenvalue has the
+wrong sign for the polarity being sought. In 2-D this is $\lambda_2$; in 3-D
+the paper's branch checks the relevant $\lambda_2$ and $\lambda_3$ signs. The
+final answer is the maximum of $\mathcal{V}$ over a list of scales.
+
+The paper calls the structuredness threshold $c$, not $\gamma$. The
+scikit-image API names its corresponding argument `gamma`; this notebook uses
+$c$ for the paper's quantity and reserves $\gamma_L$ for Lindeberg's derivative
+normalization exponent.
 
 Three things about that expression drive everything below.
 
 - $R_b$ is a **ratio**. Scaling the Hessian leaves it alone, so blobness carries
   no information about σ.
-- $S$ is the only **absolute** quantity, and γ is its reference level. γ is
+- $S$ is the only **absolute** quantity, and $c$ is its reference level. $c$ is
   therefore the filter's sole contrast threshold. Frangi sets it, in their
   words, to "half the value of the maximum Hessian norm".
 - In 2-D the plate-sensitivity factor of the 3-D formula reduces to 1, so
@@ -157,10 +168,12 @@ rows, cols = np.indices((N, N), dtype=float)
 
 ## 2. D1 — `black_ridges` has no effect on an ideal ridge
 
-Frangi's rule is that a wrong-sign eigenvalue means "not a vessel", and the
-paper implements it through $R_b$: if $\lambda_2$ has the wrong sign,
-$R_b \to \infty$ and blobness underflows to zero. scikit-image reproduces that
-by clipping the denominator:
+Frangi's rule is that a wrong-sign eigenvalue means "not a vessel". In the
+paper this is an explicit zero branch in the 2-D and 3-D equations. The
+clipped-denominator mechanism below is scikit-image's implementation, not the
+paper's derivation. If $\lambda_2$ has the wrong sign, the intended response is
+zero; the implementation only gets that result when the other eigenvalue does
+not also clip to zero.
 
 ```python
 (lambda2,) = np.maximum(eigvals[1:], 1e-10)
@@ -227,8 +240,6 @@ print(f"  clipped denominator = {max(row[1][64], 1e-10):.1e}")
 print(f"  R_b = {abs(row[0][64]) / max(row[1][64], 1e-10):.4f}"
       f"   blobness = {blob[64, 64]:.4f}   (should be 0)")
 ```
-
-+++
 
 ### 2.1 How wide is the leak?
 
@@ -345,16 +356,18 @@ curved pixel is $1 - \exp(-S^2/2\gamma^2) = 1 - e^{-2} \approx 0.8647$, so a
 single-scale `frangi` with the default γ cannot exceed that. A wrong-polarity
 ridge was scoring exactly it.
 
-## 3. D2 — no scale selection on ridges
+## 3. D2 — no scale normalization for ideal ridges
 
 `frangi` is documented as returning the "maximum of pixels across all scales",
-which presupposes that different scales can win. On the structures the filter
-is written for — straight ridges — they cannot, because $S$ falls with σ while
-blobness stays pegged at 1. That is the defect #7711 reports. The argument
+which allows different scales to win. On an ideal straight ridge, however,
+$S$ falls with σ while blobness stays pegged at 1, so the unnormalized
+structuredness term cannot select the ridge width. That is the scale-normalization
+problem reported by issue #7711. The paper itself says that its maximum occurs
+at a scale approximately matching vessel size; the stronger finest-scale result
+below is for the ideal ridge model and this implementation. The argument also
 needs care: $R_b$ is invariant under *scaling* the Hessian, not under *changing*
 σ, which re-smooths the image and can move $R_b$. Scale selection through
-blobness is therefore possible in principle. On an ideal ridge it never
-arrives, because $\lambda_1 = 0$ at every scale.
+blobness is therefore possible in non-ideal structures.
 
 ### 3.0 Why $S$ falls on a Gaussian ridge
 
@@ -596,10 +609,12 @@ $$
 \frac{\partial}{\partial x} G(\mathbf{x}, s),
 $$
 
-so a second derivative carries $s^{2\gamma}$ and the Hessian is scaled as a
-whole. scikit-image applies no factor at all, which is $\gamma = 0$ — the one
-value Lindeberg's analysis excludes, because it is the value for which no
-finite scale is ever selected. Issue
+so a second derivative carries $s^{2\gamma_L}$ and the Hessian is scaled as a
+whole. This $\gamma_L$ is the derivative-normalization exponent, not
+scikit-image's `gamma` argument. The API argument corresponds to Frangi's $c$,
+the structuredness threshold. scikit-image applies no derivative factor at all,
+which is $\gamma_L = 0$ — a boundary case for the ideal ridge model, where no
+finite scale is selected. Issue
 [#7711](https://github.com/scikit-image/scikit-image/issues/7711) reports the
 symptom directly: "Due to the missing scale corrections only the smallest scale
 affects the filter output."
@@ -607,8 +622,9 @@ affects the filter output."
 The repair is one multiplication, and it belongs on the Hessian so that both
 $R_b$ and $S$ see a consistently scaled matrix.
 
-The same statement on the whole vesselness rather than on $S$ alone. γ has to
-be chosen so the structuredness gate does not saturate: once it reaches 1 at
+The same statement holds for the whole vesselness rather than on $S$ alone. The
+structuredness threshold $c$ has to be chosen so the gate does not saturate:
+once it reaches 1 at
 several scales the maximum is a tie, and `max` then returns whichever came
 first, which says nothing about scale selection.
 
@@ -739,8 +755,6 @@ show_table(
 )
 ```
 
-+++
-
 ### 4.1 The promise this breaks
 
 Two documented contracts, both in `frangi`'s own docstring. The return value is
@@ -764,8 +778,6 @@ for s, g in gammas.items():
     print(f"   sigmas[0] = {s}: {g:.6f}"
           f"{'   <- matches the docstring' if g == over_all else ''}")
 ```
-
-+++
 
 ### 4.2 The fix: resolve γ before the loop
 
@@ -824,7 +836,11 @@ be true once D2 is fixed**, and §10 returns to the consequence.
 
 Fixing the order does not make the filter local. `s.max()` is a maximum over
 every pixel, so a single bright speck anywhere in the frame sets the contrast
-reference for the whole image. `on_meijering.md` §1 uses the same two probes.
+reference for the whole image. Frangi explicitly describes $c$ as depending on
+the image grey-scale range and recommends half the maximum Hessian norm. The
+global statistic is therefore part of the published heuristic; the issue here
+is that the API exposes it as `gamma=None` without documenting the non-local
+effect. `on_meijering.md` §1 uses the same two probes.
 
 ```{code-cell} ipython3
 def far_field(fn, image, spot=(0, 0), value=10.0, keep=100):
@@ -1159,9 +1175,9 @@ show_table(pd.DataFrame(polarity).set_index("ridge width").round(6))
 No other implementation makes all of these choices, and each of the four
 in-filter defects is contradicted by at least one of them.
 
-| implementation | wrong-sign rejection (D1) | σ normalisation (D2) | γ / c (D3, D4) |
+| implementation | wrong-sign rejection (D1) | σ normalisation (D2) | structuredness threshold $c$ / order (D3, D4) |
 | --- | --- | --- | --- |
-| **Frangi *et al.* (1998)** | $\mathcal{V}=0$ when an eigenvalue has the wrong sign | derivatives defined as $s^{\gamma}\,L * \partial G$ | "half the value of the maximum Hessian norm" |
+| **Frangi *et al.* (1998)** | explicit sign branch in Eqs. (13) and (15) | derivatives defined as $s^{\gamma_L}\,L * \partial G$ | $c$ is "half the value of the maximum Hessian norm" |
 | **ITK** `HessianToObjectnessMeasureImageFilter` | explicit `signConstraintsSatisfied` test, then zero | `SetNormalizeAcrossScale(true)` on the Hessian filter — Lindeberg γ = 1 | a **fixed user parameter**, never computed from the image; `Gamma == 0` disables the term |
 | **DIPlib** `FrangiVesselness` | — | documented recipe: multiply the input by σ² per scale, then take the supremum | not image-derived |
 | **Jerman's own MATLAB** ([source](https://github.com/timjerman/JermanEnhancementFilter)) | explicit `Lambda3 <= 0` test | `c = sigma.^2; Hxx = c*Hxx; ...` — σ² on the Hessian | `tau * max(Lambda3(:))`, per scale |
@@ -1180,10 +1196,10 @@ defect rather than this one. Nobody freezes one at an arbitrary scale.
 The proposed `jerman` filter is worth flagging on its own account, though only
 for half of what it first appears. Its reference implementation multiplies the
 Hessian by `sigma.^2` and the PR does not, which reads as D2 arriving in a new
-filter. It is not: `jerman_vesselness.md` §3 shows the Jerman response depends
-on its two eigenvalues only through their *ratio*, so any positive rescaling of
-the Hessian — `sigma**2` included — leaves it unchanged to the last bit. The
-omission is inert.
+filter. It is not a response change while the eigenvalues stay clear of the
+PR's absolute `eigval_tol`: `jerman_vesselness.md` §3 shows that the response
+depends on its eigenvalues only through their ratio. The omission is therefore
+conditionally inert, not unconditionally so.
 
 What does carry over is the other half: `jerman` recomputes
 `tau * lambda3.max()` inside the scale loop, so it would be a second filter
@@ -1266,8 +1282,6 @@ for label, fn, parts_fn, power in (
     }
 show_table(pd.DataFrame(checks).T)
 ```
-
-+++
 
 ### 10.2 D2 and D3 must be fixed together
 
@@ -1360,8 +1374,6 @@ for gamma, label in (("per-scale", "γ per scale"), (max(gammas.values()), "γ h
     print(f"  {label:<14}changed for {np.mean(before[far] != after[far]):.1%} of far pixels")
 ```
 
-+++
-
 ### Do not just sort `sigmas` inside the function
 
 Sorting makes the output a function of the set again, satisfying the docstring
@@ -1398,9 +1410,9 @@ fixes A and C remove it at source, and §6 measures them doing so.
 | defect | what breaks | evidence | repair |
 | --- | --- | --- | --- |
 | D1 | `black_ridges` is inert on an ideal ridge; wrong-polarity ridges score the filter's maximum | §2, identical arrays for both settings; §2.1 leak census over σ; §8 polarity table | explicit sign test, as ITK and Jerman do |
-| D2 | ideal ridges never select their own width; non-trivial vesselness collapses to the finest σ | §3, analytic falloff; high-$V$ photo scan; peaks under Lindeberg powers | $\sigma^{2\gamma_L}$ on the Hessian; #7711 |
+| D2 | ideal ridges never select their own width under the shipped unnormalized structuredness term; non-trivial vesselness collapses to the finest σ in the tested regime | §3, analytic falloff; high-$V$ photo scan; peaks under Lindeberg powers | $\sigma^{2\gamma_L}$ on the Hessian; #7711 |
 | D3 | output depends on the order of `sigmas` | §4, three permutation classes keyed by `sigmas[0]` | resolve γ before the loop |
-| D4 | output depends on pixels arbitrarily far away | §5, far-field probe, zero once γ is explicit | none that keeps `gamma=None`; document it |
+| D4 | `gamma=None` makes output depend on pixels arbitrarily far away | §5, far-field probe, zero once `gamma` is explicit | document the published global-$c$ heuristic, or require a local threshold |
 | D5 | a bright rim, large relative to the output range | §6, disagreement with a once-extended reference | `on_hessian.md` fixes A and C |
 | D6 | `alpha` is documented and inert in 2-D | §7, exactly zero difference in 2-D, non-zero in 3-D | one docstring line |
 

@@ -19,9 +19,11 @@ and C. Applied together they take `frangi`, `sato` and `hessian` to exact
 agreement with a once-extended reference. `meijering` does not follow: it drops
 from 26.3% to 3.3%, and the residue is its *interior* figure, unchanged.
 
-This notebook is about that residue. It is a second defect, in `meijering`
-alone, that the border fix exposes rather than causes — and the obvious repair
-makes the filter worse, which is why it is worth a notebook rather than a patch.
+This notebook is about that residue in scikit-image's multiscale extension. The
+original Meijering detector is single-scale and its global normalization is
+intentional; the issue here is the undocumented per-scale normalization followed
+by a cross-scale maximum. The obvious repair makes the multiscale filter worse,
+which is why it is worth a notebook rather than a patch.
 
 Everything here assumes the Hessian is already fixed. Coordinates are in array
 order throughout.
@@ -97,7 +99,11 @@ filtered_max = np.maximum(filtered_max, vals)
 
 Each scale is divided by **its own maximum over the whole image** before the
 cross-scale maximum is taken. That is the only per-scale normalisation in the
-module: `sato`, `frangi` and `hessian` have nothing like it.
+module: `sato`, `frangi` and `hessian` have nothing like it. The original
+Meijering detector is single-scale; its global normalization is part of the
+paper's neuriteness-to-cost construction. The non-local multiscale behavior
+below belongs to scikit-image's extension that normalizes each scale and then
+fuses them.
 
 The consequence is that the value at a pixel stops depending only on the
 neighbourhood of that pixel.
@@ -409,7 +415,7 @@ proves nothing. §6.2 repeats the scan on widths that sit on the grid, and
 The next section derives the exponent from the source paper and places it
 against other ridge filters.
 
-## 5. Lindeberg's γ = 3/4
+## 5. Lindeberg's model calibration γ = 3/4
 
 The reference is
 [Lindeberg, *Int. J. Comput. Vis.* 30(2):117–154, 1998](https://doi.org/10.1023/A:1008097225773)
@@ -454,11 +460,13 @@ Two calibrations follow at once:
 | $\gamma = 1$ | $2\,t_0$ | classical scale-normalised second derivative; peak at $\sigma^\ast = w\sqrt{2}$ |
 | $\gamma = 3/4$ | $t_0$ | peak at the ridge's own width, $\sigma^\ast = w$ |
 
-γ = 3/4 is therefore not an empirical fit. It is the unique value that makes
-this strength measure select the model ridge's own variance. The same
-$t^\ast$ formula appears for his other ridge strengths $N$ and $A$ on this
-model. In σ-units the multiplier on a raw second-derivative response is
-$\sigma^{2\gamma}$, so γ = 3/4 → `sigma**1.5` and γ = 1 → `sigma**2`.
+γ = 3/4 is therefore not an empirical fit for this cylindrical Gaussian model.
+It is the unique value that makes this strength measure select the model ridge's
+own variance. It is not a universal optimum for every ridge model or every
+multiscale fusion rule. The same $t^\ast$ formula appears for Lindeberg's
+other ridge strengths $N$ and $A$ on this model. In σ-units the multiplier on a
+raw second-derivative response is $\sigma^{2\gamma}$, so γ = 3/4 →
+`sigma**1.5` and γ = 1 → `sigma**2`.
 
 ```{code-cell} ipython3
 # Continuous ridge model: response ∝ sigma**(2γ) / (w² + sigma²)**1.5
@@ -489,11 +497,13 @@ fig.tight_layout()
 Section 5.1 is a continuous model. Three things could go wrong between it and
 the shipped filter, and each is cheap to check.
 
-**The Hessian this notebook consumes is the broken one.** Every scan here calls
+**The Hessian this notebook consumes is the shipped one.** Every scan here calls
 `hessian_matrix` as shipped, which `on_hessian.md` shows is inaccurate at small
 σ — and small σ is exactly where γ = 3/4 and γ = 1 are told apart. So repeat
-the scan on a Hessian built with fixes A and C: one pass per element, with taps
-whose discrete moments are repaired.
+the scan on a Hessian built with the notebook's fixes A and C: one pass per
+element, with taps whose discrete moments are repaired. These are diagnostic
+alternatives, not the discrete Gaussian derivative construction described by
+Lindeberg.
 
 ```{code-cell} ipython3
 def gaussian_taps(sigma, order, trunc=8):
@@ -1032,17 +1042,18 @@ print("asserts passed: paper α suppresses blobs; shipped α does not")
 
 ## 7. What to do
 
-**The defect is real and is worth an issue.** `meijering` is the only ridge
-filter in `skimage` whose *comparison between scales* depends on pixels
-arbitrarily far away. Cropping an image changes the answer for the part that
-remains by 16% on the `camera` photograph; brightening one corner pixel changes
-it by 87% a hundred pixels away. Neither is defensible for a filter, and
-neither is documented. (`frangi` is non-local too, through its default
-`gamma`, but by a single frozen scalar that leaves the scale comparison
-intact; see §1 and `on_frangi.md`.) For a *single* sigma the paper's ρ = λ/λ_min is the same global
-rescale everywhere, so relative structure inside one scale is unchanged; the
-harm appears when each scale divides by a *different* max before the
-cross-scale maximum.
+**The multiscale mismatch is real and is worth an issue.** Meijering's paper
+uses one Gaussian width and intentionally defines a global display/cost
+normalization. The scikit-image extension applies a different global
+normalization at every scale and then takes a maximum, so its *comparison
+between scales* depends on pixels arbitrarily far away. Cropping an image
+changes the answer for the part that remains by 16% on the `camera` photograph;
+brightening one corner pixel changes it by 87% a hundred pixels away. (`frangi`
+is non-local too, through its default `gamma`, but by a single frozen scalar
+that leaves the scale comparison intact; see §1 and `on_frangi.md`.) For a
+*single* sigma the paper's ρ = λ/λ_min is the same global rescale everywhere,
+so relative structure inside one scale is unchanged; the harm appears when each
+scale divides by a *different* max before the cross-scale maximum.
 
 **Paper vs skimage.** Faithful single-scale Meijering: keep ρ ∝ λ/λ_min (or
 document an optional final normalize), and use α = −1/(ndim+1) as the docstring
@@ -1052,8 +1063,8 @@ already claims and as the paper's flatness criterion requires — α = −1/3 in
 doubling the blob response relative to the ridge. No per-scale σ power is
 required when `sigmas` has one entry.
 
-**Optimum for skimage's multiscale API.** The paper does not define max-over-
-sigmas. For that extension, prefer local γ-normalisation, then max, then at
+**One candidate for skimage's multiscale API.** The paper does not define
+max-over-sigmas. For that extension, prefer local γ-normalisation, then max, then at
 most one global normalize on the fused map:
 
 1. Multiply the (clipped) neuriteness at each scale by `sigma**(2 * gamma)`
@@ -1062,13 +1073,13 @@ most one global normalize on the fused map:
 3. Optionally divide the result by its global max once, if a [0, 1] map is
    wanted for display or costs (paper ρ, applied after fusion).
 
-Why 3/4 rather than 1. Section 5: for a Gaussian ridge, Lindeberg's
+Why 3/4 rather than 1. For the cylindrical Gaussian ridge model, Lindeberg's
 γ-normalised principal-curvature strength peaks at the true width only when
 γ = 3/4. With γ = 1 the continuous model peaks at σ\* = w√2, and the discrete
 scan in §4 prefers `sigma**1.5` (picks 2 and 6) over `sigma**2` (picks 2 and
-8). Sato already uses `sigma**2` on its vesselness product; that is a
-reasonable family convention, but for *this* filter's scale selection it is
-second-best.
+8). This is a model calibration, not a universal optimum. Sato already uses
+`sigma**2` on its vesselness product; that is a reasonable family convention,
+but for *this* candidate scale-selection rule it is second-best.
 
 **Do not** equate "#5561: no σ² in the paper" with "keep nonlocal `/max` under
 multiscale." Those answer different questions: display mapping versus fair

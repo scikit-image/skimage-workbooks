@@ -248,9 +248,10 @@ $$
 
 where $s$ is the Gaussian standard deviation, and with the $s^2$ built in.
 Jerman's MATLAB implements it as
-`c = sigma.^2; Hxx = c*Hxx; ...`. That is Lindeberg's scale normalisation, the
-same $\sigma^2$ whose absence is `on_frangi.md`'s D2 — the defect that leaves
-`frangi` with no scale selection and is the subject of the still-open issue
+`c = sigma.^2; Hxx = c*Hxx; ...`. That is Lindeberg's scale normalisation. Its
+absence is related to `on_frangi.md`'s D2: on ideal ridges, the unnormalized
+structuredness term cannot select a finite width, and it is the subject of the
+still-open issue
 [#7711](https://github.com/scikit-image/scikit-image/issues/7711). Finding it
 missing here looks like the same bug arriving in a new filter.
 
@@ -690,9 +691,11 @@ What is not covered follows from the sections above:
 | locality — does a distant pixel change the answer? | measured here, not in a unit test |
 | bounded output | yes, on the 3-D fixture; saturation rate is not a unit-test contract |
 
-The PR documents tau as usually between 0.5 and 1 but accepts values outside
-that interval. This notebook-only wrapper demonstrates the validation that
-could be proposed to the author.
+The paper describes tau as a cutoff between zero and one, evaluates it over
+that interval, and recommends 0.5 to 1 for the reported trade-off between
+uniformity and false positives. The PR documents the recommendation but does
+not validate it. This notebook-only wrapper demonstrates stricter validation
+of the recommended interval; that policy could be proposed to the author.
 
 ```{code-cell} ipython3
 def checked_jerman(image, sigmas, tau):

@@ -23,6 +23,10 @@ signal and shows up in `frangi`, `sato`, `meijering` and `hessian`.
 This notebook explains what each function computes, why they differ, what the
 correct answer is, and what a fix changes.
 
+The border discrepancy is a finite-array implementation issue. The scale-space
+papers define convolution on an infinite grid; the reference used here is the
+explicit once-extended finite-array construction chosen by this notebook.
+
 Coordinates are in array order throughout: the first index runs down the
 picture, the second runs right.
 
@@ -158,8 +162,13 @@ finite difference, taken on the blurred image.
 with derivatives of the Gaussian directly, through the `order` argument of
 [`scipy.ndimage.gaussian_filter`](https://docs.scipy.org/doc/scipy/reference/generated/scipy.ndimage.gaussian_filter.html).
 It applies two successive **first**-order passes rather than one second-order
-pass, and each pass uses `sigma / sqrt(2)`, because two Gaussians of that width
-compose to a single Gaussian of width `sigma`.
+pass, and each pass uses `sigma / sqrt(2)`. For continuous Gaussians, two
+Gaussians of that width compose to a Gaussian of width `sigma`. SciPy uses
+sampled and truncated kernels, so this is the continuous target, not an exact
+discrete identity; [Lindeberg (1993)](../library/lindeberg1993discrete_scale_space.pdf)
+and [Lindeberg (2023)](../library/lindeberg2023gaussian_discretisations.pdf)
+describe the loss of the semigroup property for sampled Gaussians, especially
+at fine scales.
 
 ```{code-cell} ipython3
 single = ndi.gaussian_filter(blob, 2.0, mode="nearest")
@@ -171,8 +180,10 @@ print(f"one pass at sigma vs two at sigma/sqrt(2): "
       f"max difference {np.abs(single - halved).max():.2e}")
 ```
 
-That composition is why the two-pass scheme is allowed at all. It is also, as
-section 7 shows, where the border problem comes from.
+That continuous composition is why the two-pass scheme is used. The measured
+difference above is specific to this image, boundary mode, and scale. The two
+separate boundary extensions are also where the border problem in section 7
+comes from.
 
 +++
 
@@ -221,15 +232,19 @@ for sigma, a, b in zip(sigmas, finite, gaussian_deriv):
     print(f"{sigma:>6}{a:>20.2%}{b:>23.2%}")
 ```
 
-Above `sigma = 1` the Gaussian-derivative route is exact to the precision of
-the test — the measured error is zero, which is why the curve below rests on an
-imposed floor — while finite differences stay wrong by a few percent however
-much the image is smoothed. Below about `sigma = 0.85` they swap places, and
-the Gaussian route degrades sharply: its kernels are then narrower than a pixel
-and badly sampled. That is the **aliasing** the docstring warns about when it
-advises against a `sigma` much less than 1. The next subsection says what that
-word means here, what the source's `truncate = 100` line does about it, and why
-that choice forces enormous image padding later.
+For this blob, interior crop, and list of tested scales, the Gaussian-derivative
+route reaches floating-point agreement above `sigma = 1`, while finite
+differences stay wrong by a few percent. This is a measurement of this test,
+not a general exactness claim. [Lindeberg's 2023 discretization
+study](../library/lindeberg2023gaussian_discretisations.pdf) reports
+that sampled Gaussian derivatives are usually accurate above about one pixel,
+but that the threshold depends on derivative order and task. Below about
+`sigma = 0.85` they swap places here, and the Gaussian route degrades sharply:
+its kernels are then narrower than a pixel and badly sampled. That is the
+**aliasing** the docstring warns about when it advises against a `sigma` much
+less than 1. The next subsection says what that word means here, what the
+source's `truncate = 100` line does about it, and why that choice forces enormous
+image padding later.
 
 Two further points are revisited with the fixes. The aliasing itself is not
 repairable — it is lost information — but its two *unconditional* consequences
@@ -242,11 +257,13 @@ that flatters finite differences more than a textured image would.
 ### Aliasing, `truncate = 100`, and padding
 
 SciPy builds each Gaussian-derivative FIR by **sampling the continuous formula
-on the integer grid** and truncating at radius
+on the integer grid**, normalizing the sampled zeroth-order Gaussian first, and
+truncating at radius
 `L = int(truncate * sigma + 0.5)`. Call each coefficient a *tap* (standard FIR
 jargon; see
 [Wikipedia: Finite impulse response](https://en.wikipedia.org/wiki/Finite_impulse_response)).
-For a second derivative the continuous shape is
+For a second derivative this is therefore the normalized-sampled-derivative
+variant of the continuous shape
 `g(x) * (x**2 - sigma**2) / sigma**4` with `g` a normalised Gaussian.
 
 ```{code-cell} ipython3
@@ -1109,8 +1126,10 @@ annihilate constants and reproduce quadratics:
     sum(k * x**2) / 2  ==  1        exact on f = x**2 / 2
 ```
 
-Imposing both on the sampled kernel is the standard remedy for a badly sampled
-derivative operator, and it takes two lines.
+Imposing both on the sampled kernel is a local consistency repair, and it takes
+two lines. It is not Lindeberg's discrete Gaussian derivative construction:
+that construction smooths with the discrete Bessel-kernel scale space and then
+applies small-support central differences.
 
 ```{code-cell} ipython3
 def corrected_taps(sigma, order, trunc=8):
@@ -1406,8 +1425,8 @@ discrete kernel's transfer function the *periodised* continuous one:
 Everything the continuous operator had beyond Nyquist is folded back and added
 in. Folding is many-to-one. No choice of coefficients can separate what was
 added, because the samples no longer carry it. If the operator you want has
-energy above `pi` — and `-w**2 exp(-s**2 w**2 / 2)` always does — then no FIR on
-this grid is that operator.
+energy above `pi` — and `-w**2 exp(-s**2 w**2 / 2)` always does — then no FIR
+obtained by directly sampling the continuous kernel is that operator.
 
 That last sentence needs one qualification, because it is easy to over-read.
 What sampling gives you is the periodised sum; what you *want* is the

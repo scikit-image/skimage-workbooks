@@ -460,7 +460,7 @@ at all, because $h'(0,0) \propto -(1+\alpha)$ vanishes there — tabulated in
 
 ## 6. Where −1/3 comes from
 
-The paper's criterion is that $h'$ be "maximally flat in its longitudinal
+The paper's 2-D criterion is that $h'$ be "maximally flat in its longitudinal
 direction", written
 
 $$
@@ -473,11 +473,14 @@ $g''(0) = -A/\sigma^2$ and $g''''(0) = 3A/\sigma^4$,
 
 $$
 \partial_{vv} h'(0,0) = G_{uuvv}(0) + \alpha G_{vvvv}(0)
-  = \frac{A^2}{\sigma^4}\,(1 + 3\alpha),
+  \propto \frac{1 + 3\alpha}{\sigma^4},
 $$
 
 which is the paper's $(1 + 3\alpha)\|r\|^4/\sigma^4$ and vanishes at
 $\alpha = -1/3$.
+
+For the normalized Gaussian used in the check below, the proportionality
+constant is $A^2$.
 
 ```{code-cell} ipython3
 def longitudinal_curvature(alpha, sigma, half=24):
@@ -535,7 +538,7 @@ slowly — flat at the centre, which is the criterion. Above it the profile is
 more sharply peaked; at $-1$ the centre has become a local *maximum* and the
 filter has split.
 
-The right panel is the same statement in $n$ dimensions. The paper derives
+The right panel is a notebook extension to $n$ dimensions. The paper derives
 only the 2-D case, and the constant $3$ in $(1+3\alpha)$ is not the dimension:
 it is $g''''(0)/g(0) = 3/\sigma^4$, the fourth moment of the 1-D Gaussian.
 Carrying the limit through in $n$ dimensions adds one term per extra
@@ -611,9 +614,11 @@ print(f"blob at +1/3 over blob at -1/3:    "
       f"{blob_at[1 / 3] / blob_at[-1 / 3]:.4f}   (|(1+1/3)/(1-1/3)| = 2)")
 ```
 
-Both flat lines are flat to the last bit, not approximately. So α is a
-**blob dial and nothing else**: it acts only where both principal curvatures
-are non-zero, and leaves ridges and edges exactly where it found them. The
+Both flat lines are flat to the last bit, not approximately. For these exact
+rank-one ridge and edge models, α is a **blob dial and nothing else**: it acts
+only where both principal curvatures are non-zero, and leaves those ridges and
+edges exactly where it found them. Curved, finite, or noisy structures need not
+have a zero second eigenvalue. The
 paper's sign attenuates blobs, the shipped sign amplifies them, by the factor
 $|(1 + \tfrac13)/(1 - \tfrac13)| = 2$.
 
@@ -958,8 +963,8 @@ dimension check.
 | what is α? | the mixing constant in $\lambda'_i = \lambda_i + \alpha\sum_{j\neq i}\lambda_j$ | §3 |
 | what does it change? | the *shape* of the filter $h' = \{(r\cdot\nabla)^2 + \alpha(r_\perp\cdot\nabla)^2\}G$, since $\lambda'_i = f * h'_i$ | §4, §5 |
 | why −1/3? | it is the unique α making $h'$ flat along the ridge at the origin, $(1+3\alpha) = 0$ | §6 |
-| in n dimensions? | $1 + (n+1)\alpha = 0$, so $-1/(n+1)$ | §6 |
-| what does it buy? | blob suppression only; ridge and edge responses are exactly α-invariant | §7 |
+| in n dimensions? | notebook extension: $1 + (n+1)\alpha = 0$, so $-1/(n+1)$ | §6 |
+| what does it buy? | blob suppression in the tested rank-one models; ridge and edge responses are α-invariant there | §7 |
 | why not −1? | blobs vanish, but so does the filter's centre | §7.1 |
 | what does skimage use? | $+1/(\mathrm{ndim}+1)$, the right magnitude with the wrong sign | §8 |
 
