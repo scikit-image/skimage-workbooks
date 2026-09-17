@@ -16,14 +16,7 @@ kernelspec:
 
 [PR 8074](https://github.com/scikit-image/scikit-image/pull/8074) adds a fifth
 ridge filter, from [Jerman *et al.*
-(2016)](https://doi.org/10.1109/TMI.2016.2550102). `on_frangi.md` and
-`on_meijering.md` catalogue defects in two of the four already there, so the
-question for a new one is whether it repeats them.
-
-The short answer: it repeats one and avoids two, and the deviation from the
-author's own reference implementation that looks most alarming turns out not to
-matter at all. That last point corrects a claim made in `on_meijering.md` §5.4,
-which is amended.
+(2016)](https://doi.org/10.1109/TMI.2016.2550102).
 
 Coordinates are in array order.
 
@@ -80,12 +73,13 @@ def recede(ax, title=None):
 Sort the Hessian eigenvalues by magnitude, $|\lambda_1| \le |\lambda_2| \le
 |\lambda_3|$. Jerman's measure uses the largest one and a *regularised* version
 of it, $\lambda_\rho$, which replaces small values by a floor set at a fraction
-$\tau$ of the largest $\lambda_3$ **anywhere in the image** (their equation 13):
+$\tau$ of the largest $\lambda_3$ **at that scale over the image** (their equation 13):
 
 $$
-\lambda_\rho = \begin{cases}
+M_3(s) = \max_\mathbf{x} \lambda_3(\mathbf{x},s), \qquad
+\lambda_\rho(\mathbf{x},s) = \begin{cases}
 0 & \lambda_3 \le 0 \\
-\tau \max_\mathbf{x} \lambda_3 & 0 < \lambda_3 \le \tau \max_\mathbf{x}\lambda_3 \\
+\tau M_3(s) & 0 < \lambda_3 \le \tau M_3(s) \\
 \lambda_3 & \text{otherwise.}
 \end{cases}
 $$
@@ -101,8 +95,10 @@ $$
 \end{cases}
 $$
 
-and the filter takes the maximum over a list of σ. In 2-D there is no third
-eigenvalue and the reference sets $\lambda_3 = \lambda_2$.
+and the filter takes the maximum over a list of σ. In 2-D the paper introduces
+an auxiliary eigenvalue by setting $\lambda_3 = \lambda_2$. This is the 2-D
+specialization of a 3-D model with a circular cross-section; an elliptical
+cross-section is therefore outside that equivalence.
 
 The PR implements this response for 2-D and 3-D images. `skimage.filters.jerman`
 is not in this notebook's environment, so the version below is an executable
@@ -250,7 +246,8 @@ $$
 H_{ij}(\mathbf{x}, s) = s^2\, I(\mathbf{x}) * \frac{\partial^2}{\partial x_i \partial x_j} G(\mathbf{x}, s),
 $$
 
-with the $s^2$ built in, and Jerman's MATLAB implements it as
+where $s$ is the Gaussian standard deviation, and with the $s^2$ built in.
+Jerman's MATLAB implements it as
 `c = sigma.^2; Hxx = c*Hxx; ...`. That is Lindeberg's scale normalisation, the
 same $\sigma^2$ whose absence is `on_frangi.md`'s D2 — the defect that leaves
 `frangi` with no scale selection and is the subject of the still-open issue
