@@ -12,6 +12,7 @@ project:
     - file: notebooks/on_warp_maps.md
     - file: notebooks/on_blob_dog.md
     - file: notebooks/on_frangi.md
+    - file: notebooks/frangi_testing.md
     - file: notebooks/on_meijering.md
     - file: notebooks/jerman_vesselness.md
     - file: notebooks/meijering_alpha.md

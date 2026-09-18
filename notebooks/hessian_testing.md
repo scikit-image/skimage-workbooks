@@ -390,6 +390,90 @@ mechanism: one subtraction of numbers of order one, on an image of order one.
 Asserting exact equality here would be asserting the old implementation's
 symmetry, not the documented behaviour.
 
+### 4.1 That $10^{-16}$ is not free
+
+The exact zero was load-bearing. Two of the four ridge filters that consume
+`hessian_matrix` divide by a quantity derived from the Hessian, and a divisor
+that is rounding noise turns the noise into the output. `meijering` scales each
+scale by its own maximum; `frangi` takes its contrast reference γ from
+`s.max()`. Both guard the divisor against being *exactly* zero, and that guard
+is sufficient only while the Hessian is exactly zero.
+
+```{code-cell} ipython3
+import importlib
+from unittest import mock
+
+from skimage.filters import meijering, frangi
+
+# `frangi` and `meijering` import `hessian_matrix` inside the function body,
+# from the implementation package, so that is the name to replace.
+corner_module = importlib.import_module("_skimage2.feature.corner")
+
+
+def as_hessian_matrix(rule):
+    """Wrap a Hessian rule in the `hessian_matrix` signature, ready to patch."""
+    def replacement(image, sigma=1, mode="reflect", cval=0, order="rc",
+                    use_gaussian_derivatives=True):
+        return rule(np.asarray(image, float), sigma, mode=mode, cval=cval)
+    return replacement
+
+
+rows = []
+for constant in (0.4, 1.0, 1 / 3, 0.7):
+    flat_image = np.full((48, 48), float(constant))
+    row = {"constant image": round(constant, 4)}
+    for label, method in (("shipped", None), ("one-pass", one_pass)):
+        if method is None:
+            row[f"meijering, {label}"] = meijering(flat_image, sigmas=[1, 3]).max()
+            row[f"frangi, {label}"] = frangi(flat_image, sigmas=[1, 3]).max()
+        else:
+            with mock.patch.object(corner_module, "hessian_matrix",
+                                   as_hessian_matrix(method)):
+                row[f"meijering, {label}"] = meijering(flat_image,
+                                                       sigmas=[1, 3]).max()
+                row[f"frangi, {label}"] = frangi(flat_image, sigmas=[1, 3]).max()
+    rows.append(row)
+show_table(pd.DataFrame(rows).round(6), index="constant image")
+```
+
+A flat image comes out of `frangi` at 0.8647 — the largest score it can return
+— and out of `meijering` at 1.0 everywhere. The `0.4` row is a coincidence
+worth noticing: it is a constant whose rounding noise happens to leave
+`meijering`'s selected eigenvalue non-positive, so the clip to zero catches it.
+Nothing about `0.4` is special otherwise, and a test that used only that
+constant would miss this.
+
+The repair belongs in those two filters, not in the kernel, for a reason that
+is measurable: the exact zero cannot be recovered. Repairing the kernel's sum
+again after the correction converges at σ = 0.5 and stalls at about
+$10^{-17}$ from σ = 1 upward, because the adjustment falls below the last bit
+of the accumulated sum — and `correlate1d` sums in its own order in any case.
+
+```{code-cell} ipython3
+rows = []
+for sigma in (0.5, 1.0, 2.0, 3.0):
+    k = taps(sigma, 2).copy()
+    centre = len(k) // 2
+    repairs = 0
+    while repairs < 6:
+        residue = ndi.correlate1d(np.ones(64), k, mode="nearest")[32]
+        if residue == 0.0:
+            break
+        k[centre] -= residue
+        repairs += 1
+    rows.append({"sigma": sigma, "extra repairs": repairs,
+                 "response to a constant row":
+                     f"{ndi.correlate1d(np.ones(64), k, mode='nearest')[32]:.1e}"})
+show_table(pd.DataFrame(rows), index="sigma")
+```
+
+So each consuming filter compares its divisor against a floor scaled to the
+image, `100 * eps * abs(image).max()`, rather than against zero. That is a
+change to `meijering` and `frangi` caused by this one, and it belongs in the
+same pull request — it is not scope creep, it is the cost.
+
++++
+
 +++
 
 ## 5. Test 4 — a Gaussian blob, against its closed form
@@ -829,7 +913,10 @@ tens of per cent between runs on this machine, so read the ratio's order and not
 its last digit.
 
 **Limits.** One photograph (256², `camera` decimated), one synthetic quadratic
-and one Gaussian blob, at σ from 0.1 to 4, in two and three dimensions. The
+and one Gaussian blob, at σ from 0.1 to 4, in two and three dimensions. §4.1
+measures two consuming filters on flat images only; what the guard does to them
+on real images is `on_frangi.md` and `on_meijering.md`'s business, not this
+notebook's. The
 five tests above are pointed at the local candidates (`shipped` / `one_pass`);
 when they land in the library suite they must call public `hessian_matrix`,
 not a notebook transcription. `float32` input is not tested here, nor is the
