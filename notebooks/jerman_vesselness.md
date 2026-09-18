@@ -16,7 +16,16 @@ kernelspec:
 
 [PR 8074](https://github.com/scikit-image/scikit-image/pull/8074) adds a fifth
 ridge filter, from [Jerman *et al.*
-(2016)](https://doi.org/10.1109/TMI.2016.2550102).
+(2016)](https://doi.org/10.1109/TMI.2016.2550102). `on_frangi.md` and
+`on_meijering.md` catalogue defects in two of the four already there, so the
+question for a new one is whether it repeats them.
+
+It avoids Frangi's polarity and sigma-order defects. It shares Meijering's
+non-locality, which comes from the published $\tau\max\lambda_3$ rule rather
+than from the port. The missing $s^2$ is inert for this ratio-only response at
+ordinary amplitudes; an absolute eigenvalue tolerance makes that claim
+conditional. The rest of the notebook measures those points and sketches
+candidate follow-ups for the author.
 
 Coordinates are in array order.
 
@@ -112,8 +121,9 @@ def jerman_core(image, sigmas, tau=0.75, black_ridges=True, mode="reflect",
 
     `power=0` is the PR as written; `power=2` adds the `c = sigma.^2` scaling
     that Jerman's own MATLAB applies. `relative_tol=True` applies a candidate
-    scale-relative tolerance and is not in the PR. Returns the fused maximum
-    and the per-scale responses.
+    relative floor (`eps * max(λ₃⁺)` here — illustrative, not a proposed
+    constant) and is not in the PR. Returns the fused maximum and the
+    per-scale responses.
     """
     image = image.astype(float, copy=False)
     if not black_ridges:
@@ -336,8 +346,12 @@ scales. The next section measures what the supplied scale list does.
 
 The PR uses `eigval_tol = 1e-10` as an absolute floor. The clipping and the two
 special cases in equation 15 therefore introduce an input-unit threshold. The
-candidate path uses machine epsilon times the largest positive $\lambda_3$ at
-each scale instead.
+candidate path scales the floor by the largest positive $\lambda_3$ at each
+scale. Here that factor is machine epsilon — enough to show that *some*
+relative floor restores amplitude invariance in this probe, but sharper than a
+production suggestion. A PR change would more likely use a small multiple of
+`eps` (or of `lambda3_max` itself), chosen against float32 inputs and near-null
+Hessians, not `eps` alone.
 
 ```{code-cell} ipython3
 reference = jerman_core(-PHOTO, SIGMAS)[0]
@@ -371,11 +385,12 @@ show_table(pd.DataFrame(rows_amp), index="image ×")
 ```
 
 The original PR changes when the image amplitude crosses its absolute floor.
-The candidate relative tolerance keeps both the amplitude comparison and the
-`sigma**2` comparison at floating-point scale in this probe. This check uses
+The candidate relative floor keeps both the amplitude comparison and the
+`sigma**2` comparison at floating-point scale in this probe. That supports the
+*direction* of the fix, not the exact `eps` multiplier. This check uses
 `mode="reflect"`; a nonzero `cval` is not rescaled when the image is rescaled
-and is a separate boundary condition. A similar relative-tolerance change could
-be proposed for the author's PR.
+and is a separate boundary condition. A relative-tolerance change of this kind
+could be proposed for the author's PR, with the constant chosen separately.
 
 
 +++
@@ -675,7 +690,8 @@ $\mathcal{V}'(r) = 27(4-2r)/(1+r)^4 < 0$ for $r > 2$.
 
 The inherited linearity tests use constant arrays, so their Hessians are zero
 and they do not test amplitude behavior. The fixture, 3-D volume, amplitude
-sweep, and tau validation below are notebook checks, not tests added by the PR.
+sweep, and tau-policy table below are notebook checks, not tests added by the
+PR.
 
 What is not covered follows from the sections above:
 
@@ -685,7 +701,7 @@ What is not covered follows from the sections above:
 | known 2-D response | measured here, not in the PR |
 | genuine 3-D branch | measured here, not in the PR |
 | amplitude invariance | original PR fails at small amplitudes; candidate passes this probe |
-| tau range validation | candidate behavior measured here, not in the PR |
+| tau guidance | paper recommends 0.5–1; PR accepts outside that; own τ test uses 0–2 |
 | agreement with Jerman's MATLAB output | no |
 | behaviour across `sigmas` | no |
 | locality — does a distant pixel change the answer? | measured here, not in a unit test |
@@ -693,39 +709,44 @@ What is not covered follows from the sections above:
 
 The paper describes tau as a cutoff between zero and one, evaluates it over
 that interval, and recommends 0.5 to 1 for the reported trade-off between
-uniformity and false positives. The PR documents the recommendation but does
-not validate it. This notebook-only wrapper demonstrates stricter validation
-of the recommended interval; that policy could be proposed to the author.
+uniformity and false positives. The PR documents that recommendation but still
+accepts values outside it — including the 0 and 2 used by
+`test_jerman_result_decrease_with_tau_increase`. Hard-rejecting anything
+outside $[0.5, 1]$ would therefore conflict with a test the PR already ships.
+A docstring note (or a warning) fits the paper's guidance without breaking that
+sweep; a hard interval would need the monotonicity test narrowed first.
 
 ```{code-cell} ipython3
-def checked_jerman(image, sigmas, tau):
-    """Candidate wrapper that enforces the documented tau interval."""
+def checked_jerman(image, sigmas, tau, *, hard=False):
+    """Illustrate soft vs hard handling of the recommended tau interval."""
     if not 0.5 <= tau <= 1:
-        raise ValueError("`tau` must be between 0.5 and 1.")
+        msg = "`tau` is usually between 0.5 and 1."
+        if hard:
+            raise ValueError(msg)
+        # Soft path: document only. Callers still get a response.
     return jerman_core(image, sigmas, tau=tau)[0]
 
 
 tau_rows = []
 for tau in (0.25, 0.75, 1.25):
-    try:
-        jerman_core(PHOTO, [3], tau=tau)
-        original = "accepted"
-    except ValueError:
-        original = "rejected"
-    try:
-        checked_jerman(PHOTO, [3], tau=tau)
-        candidate = "accepted"
-    except ValueError:
-        candidate = "rejected"
-    tau_rows.append({"tau": tau, "original PR": original, "candidate": candidate})
+    tau_rows.append({
+        "tau": tau,
+        "PR / soft guidance": "accepted",
+        "hard reject [0.5, 1]": (
+            "rejected" if not 0.5 <= tau <= 1 else "accepted"
+        ),
+    })
 show_table(pd.DataFrame(tau_rows), index="tau")
+# Keep the soft path exercised so the wrapper is not dead code.
+assert checked_jerman(PHOTO, [3], 0.25, hard=False).shape == PHOTO.shape
 ```
 
 The MATLAB output is not a direct fixture target because its Hessian and
 postprocessing differ from the PR. The equation-level fixture is the stable
 regression target; a separate MATLAB comparison must compare intermediate
-stages or reproduce the MATLAB conventions. The fixture and candidate tests
-are suggestions for similar additions to the author's PR.
+stages or reproduce the MATLAB conventions. The fixture and relative-tolerance
+checks are suggestions for the author's PR; the tau table is a policy choice,
+not a drop-in validation patch.
 
 ## 9. Summary
 
@@ -733,7 +754,7 @@ are suggestions for similar additions to the author's PR.
 | --- | --- | --- |
 | faithful transcription of equations 13–15 | yes, at the equation level | §1 fixture and executable transcription |
 | drops equation 1's $s^2$ | immaterial at ordinary amplitudes for this ratio-only response | §3, original and candidate comparisons |
-| tolerance scale | original PR is absolute; candidate is relative to positive $\lambda_3$ | §3.1, amplitude sweep |
+| tolerance scale | original PR is absolute; relative floor restores invariance here (`eps` is illustrative) | §3.1, amplitude sweep |
 | scale estimator | none explicit; supplied scales can still change the fused response | §4 |
 | locality | fails, through $\tau\max(\lambda_3)$ — from the paper, not the port | §5, support-separated probes |
 | depends on the order of `sigmas` | no | §5 |
@@ -742,17 +763,18 @@ are suggestions for similar additions to the author's PR.
 
 The recommendation is narrow. The PR implements equations 13 to 15, and the
 missing $s^2$ of equation 1 is inert for this ratio-only response at ordinary
-amplitudes. The absolute tolerance makes that statement conditional; the
-relative-tolerance path is a candidate change to suggest to the author. The
-MATLAB implementation remains a different numerical pipeline, so the PR should
-state that it ports the response equations rather than reproducing MATLAB
-output.
+amplitudes. The absolute tolerance makes that statement conditional; a
+*relative* eigenvalue floor is worth suggesting to the author, with the
+multiplier chosen more carefully than the `eps` used in §3.1. The MATLAB
+implementation remains a different numerical pipeline, so the PR should state
+that it ports the response equations rather than reproducing MATLAB output.
 
 The non-locality comes from the published algorithm rather than from the port,
 and `meijering` has shipped with the same property for years. The `tau` floor
 couples every pixel to the largest positive $\lambda_3$ in the frame, so
-cropping the image can change the answer. A sentence documenting this could be
-proposed for the author's PR.
+cropping the image can change the answer. A docstring sentence on that coupling,
+and on the usual $0.5$–$1$ range for `tau` without hard-rejecting the PR's
+existing $0$–$2$ sweep, could be proposed for the author's PR.
 
 **Limits.** One 2-D photograph, one retina crop, and synthetic Gaussian ridges,
 at `mode='reflect'` and `tau=0.75` unless stated. The 3-D check uses one
