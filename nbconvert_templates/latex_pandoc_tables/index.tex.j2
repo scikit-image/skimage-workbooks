@@ -1,0 +1,17 @@
+((=- Latex template with pandoc captionless-longtable support.
+
+Pandoc >= 3.8 emits ``\def\LTcaptype{none}`` for tables without captions.
+Modern longtable then steps a counter named ``none``. Pandoc's own default
+template defines that counter; nbconvert's stock latex template does not
+(see jupyter/nbconvert#2254).
+
+Extend the stock latex entry point by path so this file does not recurse on
+itself (``index.tex.j2`` would resolve to this directory first). -=))
+
+((*- extends 'latex/index.tex.j2' -*))
+
+((* block packages *))
+((( super() )))
+% Dummy counter for pandoc captionless longtables (\LTcaptype{none}).
+\newcounter{none}
+((* endblock packages *))
