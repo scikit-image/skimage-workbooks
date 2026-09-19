@@ -354,7 +354,7 @@ response is $r_\gamma(\sigma) = \sigma^{2\gamma} e(\sigma)$. Setting
 $r_\gamma'(\sigma)=0$ gives
 
 $$
-\sigma^\*(\gamma) = w\sqrt{\frac{2\gamma}{3-2\gamma}}, \qquad 0 < \gamma < \tfrac32,
+\sigma^{*}(\gamma) = w\sqrt{\frac{2\gamma}{3-2\gamma}}, \qquad 0 < \gamma < \tfrac32,
 $$
 
 and the value there is
@@ -363,7 +363,7 @@ $$
 D_\gamma = w^{\,2\gamma-2}\,c(\gamma).
 $$
 
-| $\gamma$ | factor | $\sigma^\*$ | detection value $D_\gamma$ |
+| $\gamma$ | factor | $\sigma^{*}$ | detection value $D_\gamma$ |
 | --- | --- | --- | --- |
 | $1$ | $\sigma^2$ | $w\sqrt2$ | $0.3849$, independent of $w$ |
 | $3/4$ | $\sigma^{1.5}$ | $w$ | $\propto w^{-1/2}$ |

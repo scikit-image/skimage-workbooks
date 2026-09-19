@@ -16,6 +16,7 @@ dependencies:
   - pandas
   - tabulate
   - cython
+  - diplib
   - pip
   - pip:
       - "scikit-image@git+https://github.com/scikit-image/scikit-image@main"

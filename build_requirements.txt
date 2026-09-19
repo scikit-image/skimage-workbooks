@@ -19,3 +19,5 @@ pillow
 pandas
 tabulate
 cython
+diplib
+itk-filtering
