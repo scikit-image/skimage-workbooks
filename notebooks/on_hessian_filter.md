@@ -515,30 +515,53 @@ outside the group. But Fig. 2 prints one worked example at every stage, at
 is enough to check the algorithm end to end: feed the paper its own panel (b),
 and compare each stage against the panel it printed.
 
+:::{attention} Provenance of the panels below
+The five panels are extracted from Fig. 2 of Ng, Yap, Costen and Li,
+"Automatic Wrinkle Detection using Hybrid Hessian Filter", ACCV 2014
+([doi:10.1007/978-3-319-16811-1_40](https://doi.org/10.1007/978-3-319-16811-1_40)),
+© Springer International Publishing. The authors' accepted manuscript is
+distributed under
+[CC BY-NC-ND 4.0](https://creativecommons.org/licenses/by-nc-nd/4.0/).
+
+They are reproduced here, unaltered apart from conversion to 8-bit greyscale,
+for the non-commercial purpose of verifying the algorithm this notebook
+assesses. They are **not** covered by this repository's own licence — see the
+`Files:` stanza for `notebooks/hhf_fig2_fixtures/` in `LICENSE`, and
+`notebooks/hhf_fig2_fixtures/README.md`. The underlying forehead photograph is
+from the Bosphorus database and is not redistributed: only the printed figure
+panels are, and only the five the comparison needs.
+:::
+
+The panels are committed under `notebooks/hhf_fig2_fixtures/` so that this
+notebook runs anywhere. `make fixtures SET=hhf_fig2` regenerates them from the
+paper, via `library/generate_fixtures.py` and poppler's `pdfimages` — a
+developer step needing a local copy of the paper, which the build never does.
+
 ```{code-cell} ipython3
-import subprocess, tempfile
+import imageio.v3 as iio
 
-PAPER = pathlib.Path("../library/ng2014hybrid_hessian.pdf")
-
-
-def figure_2_panels():
-    """Extract the Fig. 2 panels embedded on page 6 of the paper.
-
-    Needs poppler's `pdfimages`, and `library/` (a local, uncommitted symlink
-    to reference PDFs -- see the repository README).
-    """
-    tmp = pathlib.Path(tempfile.mkdtemp())
-    subprocess.run(["pdfimages", "-f", "6", "-l", "6", "-png", str(PAPER),
-                    str(tmp / "p")], check=True)
-    # Panels (a)-(f) in figure order; the rest of page 6 is equation glyphs.
-    wanted = {"a": 0, "b": 1, "c": 2, "d": 3, "e": 4, "f": 9}
-    out = {k: ski.io.imread(tmp / f"p-{n:03d}.png") for k, n in wanted.items()}
-    assert all(v.shape[:2] in {(116, 845), (117, 845)} for v in out.values())
-    return {k: ski.color.rgb2gray(v) for k, v in out.items()}
+PANEL_FILES = {"b": "fig2b_greyscale", "c": "fig2c_gradient",
+               "d": "fig2d_vesselness", "e": "fig2e_mask",
+               "f": "fig2f_threshold"}
 
 
-panel = figure_2_panels()
-grey = panel["b"] * 255          # (b), the greyscale forehead, in 0-255
+def _fixtures():
+    """Locate hhf_fig2_fixtures, whatever the working directory is."""
+    for base in (pathlib.Path.cwd(), *pathlib.Path.cwd().parents):
+        for candidate in (base, base / "notebooks"):
+            if (candidate / "hhf_fig2_fixtures" / "fig2b_greyscale.png").is_file():
+                return candidate / "hhf_fig2_fixtures"
+    raise FileNotFoundError(
+        "cannot find hhf_fig2_fixtures/; run this notebook from a checkout "
+        "of the skimage-workbooks repository"
+    )
+
+
+# 8-bit greyscale, read as float in 0-255 -- the range the paper works in.
+FIXTURES = _fixtures()
+panel = {k: iio.imread(FIXTURES / f"{name}.png").astype(float)
+         for k, name in PANEL_FILES.items()}
+grey = panel["b"]                # (b), the greyscale forehead, in 0-255
 ```
 
 Step 1 is eq. (1), and it settles D3 on the paper's own data: panel (c) is the
@@ -589,9 +612,9 @@ show_table(pd.DataFrame([
     {"stage": "(d) vesselness", "agreement with the printed panel":
         f"correlation {agreement(ours_d, panel['d']):+.3f}"},
     {"stage": "(e) eq. (16) mask", "agreement with the printed panel":
-        f"JSI {jaccard(ours_e, panel['e'] > 0.5):.3f}"},
+        f"JSI {jaccard(ours_e, panel['e'] > 127):.3f}"},
     {"stage": "(f) after the area threshold", "agreement with the printed panel":
-        f"JSI {jaccard(ours_f, panel['f'] > 0.5):.3f}"},
+        f"JSI {jaccard(ours_f, panel['f'] > 127):.3f}"},
 ]), index="stage")
 ```
 
@@ -625,13 +648,13 @@ run the last step on *the paper's own* panel (e) and see how well that
 reproduces *the paper's own* panel (f).
 
 ```{code-cell} ipython3
-their_e = panel["e"] > 0.5
+their_e = panel["e"] > 127
 show_table(pd.DataFrame(
     [{"area threshold": f"{ms} px",
       "paper's (e) -> paper's (f)":
-          f"{jaccard(remove_small_objects(their_e, max_size=ms - 1, connectivity=2), panel['f'] > 0.5):.3f}",
+          f"{jaccard(remove_small_objects(their_e, max_size=ms - 1, connectivity=2), panel['f'] > 127):.3f}",
       "ours (e) -> paper's (f)":
-          f"{jaccard(remove_small_objects(ours_e, max_size=ms - 1, connectivity=2), panel['f'] > 0.5):.3f}"}
+          f"{jaccard(remove_small_objects(ours_e, max_size=ms - 1, connectivity=2), panel['f'] > 127):.3f}"}
      for ms in (100, 250, 400, 600)]), index="area threshold")
 ```
 
@@ -653,7 +676,7 @@ One more control, because it settles D2 on the paper's data rather than on
 ```{code-cell} ipython3
 show_table(pd.DataFrame(
     [{"gamma": str(g), "JSI against the paper's panel (e)":
-      f"{jaccard(frangi(gradient, sigmas=(1, 3, 5, 7), beta=0.5, gamma=g, black_ridges=True, mode='reflect') <= 0, panel['e'] > 0.5):.4f}"}
+      f"{jaccard(frangi(gradient, sigmas=(1, 3, 5, 7), beta=0.5, gamma=g, black_ridges=True, mode='reflect') <= 0, panel['e'] > 127):.4f}"}
      for g in (15, 15 / 255, 0.1, None)]), index="gamma")
 ```
 

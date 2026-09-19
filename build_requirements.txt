@@ -16,6 +16,7 @@ pooch
 matplotlib
 opencv-python-headless
 pillow
+imageio
 pandas
 tabulate
 cython

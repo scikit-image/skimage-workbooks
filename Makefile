@@ -19,12 +19,14 @@ BUILD_DIR = _build/html
 FIXTURES_DIR = notebooks/bresenham_nd_fixtures
 ZINGL_BIN = $(FIXTURES_DIR)/zingl_line3d
 
-.PHONY: help html book clean rm-ipynb bresenham-fixtures kernel
+.PHONY: help html book clean rm-ipynb bresenham-fixtures fixtures check-fixtures kernel
 
 help:
 	@echo "make html      build the site, warnings as errors"
 	@echo "make clean     remove _build and the paired .ipynb files"
 	@echo "make bresenham-fixtures   regenerate bresenham_nd_fixtures/*.json"
+	@echo "make fixtures        regenerate notebook fixtures from library/ papers"
+	@echo "make check-fixtures  verify committed fixtures against the papers"
 	@echo "make environment.yml   regenerate the conda environment file"
 
 # Registers the "python3" kernelspec the notebooks ask for, pointing at
@@ -35,6 +37,20 @@ kernel:
 # Kept in sync with build_requirements.txt by a pre-commit hook.
 environment.yml: build_requirements.txt
 	@$(PYTHON) make_environment_yml.py $< -o $@
+
+# Regenerate notebook fixtures extracted from the reference papers under the
+# gitignored `library/` symlink (currently the Ng et al. 2014 Fig. 2 panels
+# that on_hessian_filter.md compares against). Needs poppler's `pdfimages` and
+# a local library/; the committed fixtures are what the build reads, so this is
+# a developer target. `make fixtures SET=hhf_fig2` builds just one set.
+# See each destination's README.md, and /LICENSE, for the copyright terms.
+fixtures:
+	$(PYTHON) library/generate_fixtures.py $(SET)
+
+# Verify the committed fixtures still match a fresh extraction from the
+# papers. Writes nothing; exits non-zero on any pixel difference.
+check-fixtures:
+	$(PYTHON) library/generate_fixtures.py --check $(SET)
 
 # The 3-D cross-check in bresenham_nd_cython.md shells out to this binary.
 $(ZINGL_BIN): $(FIXTURES_DIR)/zingl_line3d.c

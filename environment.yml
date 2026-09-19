@@ -6,17 +6,20 @@ dependencies:
   - mystmd
   - ipykernel
   - jupyter-server
+  - jupytext
+  - sympy
   - setuptools
   - numpy
   - scipy
-  - sympy
   - pooch
   - matplotlib
   - pillow
+  - imageio
   - pandas
   - tabulate
   - cython
   - diplib
+  - itk-filtering
   - pip
   - pip:
       - "scikit-image@git+https://github.com/scikit-image/scikit-image@main"

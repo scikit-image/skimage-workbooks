@@ -6,6 +6,28 @@ Files: *
 Copyright: 2026 scikit-image developers
 License: Unknown
 
+Files: notebooks/hhf_fig2_fixtures/fig2*.png
+Copyright: 2014 Springer International Publishing
+License: CC-BY-NC-ND-4.0
+Comment:
+ Five panels from Figure 2 of Ng, C.-C., Yap, M. H., Costen, N., Li, B.,
+ "Automatic Wrinkle Detection using Hybrid Hessian Filter", ACCV 2014,
+ LNCS 9005, pp. 609-622 (doi:10.1007/978-3-319-16811-1_40).  Extracted
+ from the authors' accepted manuscript, which Loughborough University's
+ institutional repository distributes under CC BY-NC-ND 4.0, and
+ converted to 8-bit greyscale.  Reproduced for the non-commercial
+ purpose of verifying that algorithm in notebooks/on_hessian_filter.md.
+ These files are excluded from the license declaration above.  See
+ notebooks/hhf_fig2_fixtures/README.md.
+
+License: CC-BY-NC-ND-4.0
+ Creative Commons Attribution-NonCommercial-NoDerivatives 4.0
+ International.  Full terms:
+ https://creativecommons.org/licenses/by-nc-nd/4.0/legalcode
+ .
+ You may share these files, with attribution, for non-commercial
+ purposes.  You may not distribute modified versions of them.
+
 Files: notebooks/bresenham_nd_fixtures/zingl_line3d.c
 Copyright: 2016 Alois Zingl
 License: LicenseRef-zingl-bresenham
