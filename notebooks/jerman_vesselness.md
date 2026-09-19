@@ -392,7 +392,6 @@ The candidate relative floor keeps both the amplitude comparison and the
 and is a separate boundary condition. A relative-tolerance change of this kind
 could be proposed for the author's PR, with the constant chosen separately.
 
-
 +++
 
 ### 3.2 An inherited cost the PR does not control

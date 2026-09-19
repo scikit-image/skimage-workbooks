@@ -16,7 +16,6 @@ project:
     - file: notebooks/jerman_vesselness.md
     - file: notebooks/on_hessian_filter.md
     - file: notebooks/on_meijering.md
-    - file: notebooks/on_meijering_ng.md
     - file: notebooks/meijering_alpha.md
     - file: notebooks/meijering_alpha_testing.md
     - file: notebooks/on_hessian.md

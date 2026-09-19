@@ -27,4 +27,7 @@ notebooks/bresenham_nd_fixtures/zingl_line3d
 # Optional local link to the pyenv env (not required; see README)
 .venv
 
+# Don't track .ipynb outputs, treat them as renderings.
+*.ipynb
+
 .vscode/
