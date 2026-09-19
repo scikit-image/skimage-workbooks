@@ -128,17 +128,20 @@ for name, f in (("meijering", meijering), ("sato", sato), ("frangi", frangi)):
 
 `frangi` moves too, and for a different reason worth naming so it is not
 mistaken for this one. Its `gamma` defaults to `s.max() / 2`, half the largest
-Hessian norm in the whole image. That is also a global statistic, but the
-`if gamma is None` test sits *inside* the σ loop, so the value is computed on
-the first σ only and then frozen for the rest — one number, reused at every
-scale, rather than a fresh one per scale.
+Hessian norm in the whole image. That is also a global statistic, but it is
+*frozen*: one number, reused at every scale, rather than a fresh one per scale.
+A frozen γ still reweights the scales against each other, because the
+structuredness gate `1 - exp(-S**2 / 2 gamma**2)` is not linear in `S`.
+`on_frangi.md` §5.1 measures a change in the winning scale at 18% of the pixels
+with `V > 0.01` when γ comes from σ = 1 rather than σ = 9. So `frangi` stays out
+of this argument only by degree, not in kind.
 
-That keeps `frangi` out of the argument here only by degree, not in kind.
-`on_frangi.md` measures both: one frozen γ moves the winning scale at about 6%
-of pixels on `camera`, where a per-scale divisor moves it at about 43%. And
-freezing it at the *first* σ gives `frangi` a defect `meijering` does not have
-— its answer depends on the order of the `sigmas` list. That notebook proposes
-the fix. The rest of this one is about `meijering`.
+`frangi` in this working tree is already repaired. The `frangi-fixes` branch
+hoists γ out of the scale loop, so the value is the maximum over every scale the
+caller gave, and the output no longer depends on the order of `sigmas`. The same
+branch removes the wrong-sign leak (D1 of `on_frangi.md`) and restores the σ²
+normalisation (D2). Section 10 below sets out what that work settles here. The
+rest of this section is about `meijering`.
 
 The cleaner probe is cropping, because it changes the image's extent without
 touching any shared pixel.
@@ -1063,23 +1066,13 @@ already claims and as the paper's flatness criterion requires — α = −1/3 in
 doubling the blob response relative to the ridge. No per-scale σ power is
 required when `sigmas` has one entry.
 
-**One candidate for skimage's multiscale API.** The paper does not define
-max-over-sigmas. For that extension, prefer local γ-normalisation, then max, then at
-most one global normalize on the fused map:
-
-1. Multiply the (clipped) neuriteness at each scale by `sigma**(2 * gamma)`
-   with **`gamma = 3/4` → `sigma**1.5`**.
-2. Take the pixel-wise maximum across scales **without** per-scale `/max`.
-3. Optionally divide the result by its global max once, if a [0, 1] map is
-   wanted for display or costs (paper ρ, applied after fusion).
-
-Why 3/4 rather than 1. For the cylindrical Gaussian ridge model, Lindeberg's
-γ-normalised principal-curvature strength peaks at the true width only when
-γ = 3/4. With γ = 1 the continuous model peaks at σ\* = w√2, and the discrete
-scan in §4 prefers `sigma**1.5` (picks 2 and 6) over `sigma**2` (picks 2 and
-8). This is a model calibration, not a universal optimum. Sato already uses
-`sigma**2` on its vesselness product; that is a reasonable family convention,
-but for *this* candidate scale-selection rule it is second-best.
+**The multiscale normalisation is the remaining decision.** The paper does not
+define max-over-sigmas. Any replacement for the per-scale `/max` is a local
+`sigma**p` power followed by a maximum, and then at most one global normalise on
+the fused map. Two values of `p` are on the table: `p = 2` (γ = 1) and `p = 1.5`
+(γ = 3/4). §8 separates the detection map from the width map and shows that the
+two powers serve different outputs. §9 compares the choice with ITK and DIPlib,
+§10 relates it to the `frangi` work, and §11 gives the recommendation.
 
 **Do not** equate "#5561: no σ² in the paper" with "keep nonlocal `/max` under
 multiscale." Those answer different questions: display mapping versus fair
@@ -1098,6 +1091,439 @@ margin, so fixing the kernel retires the hack that this thread introduced.
 
 Measured with scikit-image from this working tree, on the 256x256 `camera`
 photograph and a 240x240 synthetic pair of ridges.
+
+## 8. Detection map and width map
+
+A multiscale ridge filter computes a response $r(\sigma, x)$ at every pixel $x$
+and scale $\sigma$. Two maps can be made from it:
+
+- the **detection map** $D(x) = \max_\sigma r(\sigma, x)$, the fused response;
+- the **width map** $W(x) = \arg\max_\sigma r(\sigma, x)$, the scale that won.
+
+`meijering` returns the detection map. It never returns the width map. The
+detection map answers "is there a ridge here"; the width map answers "how wide
+is it". The exponent $p$ in $r = \sigma^p e$ moves the two maps in opposite
+directions, so it is not a free magnitude scale.
+
+```{code-cell} ipython3
+def ridge_peak_sigma(width, power):
+    """Winning scale for an ideal ridge: argmax of sigma**power * e(sigma)."""
+    return width * np.sqrt(power / (3 - power))
+
+
+def ridge_peak_value(width, power):
+    """Response at that winning scale, in closed form."""
+    return (width ** (power - 2) * power ** (power / 2)
+            * (3 - power) ** ((3 - power) / 2) / 3 ** 1.5)
+
+
+def detection_and_width(image, sigmas, power):
+    """Detection map max_sigma, and width map argmax_sigma, from one scan."""
+    _, per = meijering_core(image, sigmas, how="none", black_ridges=False)
+    stack = np.stack([per[s] * s ** power for s in sigmas])
+    return stack.max(0), np.asarray(sigmas, float)[stack.argmax(0)]
+
+
+POWERS = {"sigma**1.5  (gamma = 3/4)": 1.5, "sigma**2  (gamma = 1)": 2.0}
+```
+
+### 8.1 The ideal ridge, in algebra
+
+A cylindrical Gaussian ridge of width $w$ has unit height and profile
+$\exp(-x^2/2w^2)$. Smoothing it by a Gaussian of width $\sigma$ gives another
+Gaussian, of variance $w^2 + \sigma^2$. On the ridge axis the cross-ridge
+second derivative is
+
+$$
+e(\sigma) = -\,w\,(w^2 + \sigma^2)^{-3/2},
+$$
+
+so the raw neuriteness magnitude is $w(w^2+\sigma^2)^{-3/2}$. The normalised
+response is $r(\sigma) = \sigma^p e(\sigma)$. Setting $r'(\sigma) = 0$ gives the
+winning scale
+
+$$
+\sigma^\ast(p) = w\sqrt{\frac{p}{3-p}}, \qquad 0 < p < 3,
+$$
+
+and the value there,
+
+$$
+D_p = w^{\,p-2}\, \frac{p^{p/2}\,(3-p)^{(3-p)/2}}{3^{3/2}} .
+$$
+
+The detection value has two readings at once. At $p = 2$ it is $0.3849$ for
+every $w$: the detection map does not depend on the ridge width. At $p = 3/2$
+it falls as $w^{-1/2}$: a wide vessel returns a weaker value than a narrow one
+of the same contrast. The winning scale moves the other way, to $w\sqrt2$ at
+$p = 2$ and to $w$ at $p = 3/2$.
+
+```{code-cell} ipython3
+WIDTHS_PLOT = np.array([1.0, 1.5, 2.0, 3.0, 4.0, 6.0, 8.0, 12.0])
+GRID_P = np.linspace(0.02, 2.6, 500)
+
+fig, axes = plt.subplots(1, 2, figsize=(9.6, 3.0))
+axes[0].plot(GRID_P, np.sqrt(GRID_P / (3 - GRID_P)), color=INK, lw=1.8)
+axes[0].axhline(1.0, color=GRID, lw=1)
+for label, power, colour in (("3/4", 1.5, C_ONE), ("1", 2.0, C_TWO)):
+    axes[0].plot([power], [np.sqrt(power / (3 - power))], "o",
+                 color=colour, ms=7, zorder=3)
+    axes[0].annotate(f"gamma = {label}", (power, np.sqrt(power / (3 - power))),
+                     textcoords="offset points", xytext=(6, -13), fontsize=8,
+                     color=colour)
+recede(axes[0], "winning scale against exponent")
+axes[0].set_xlabel("power p  (2 x gamma)", fontsize=8, color=MUTED)
+axes[0].set_ylabel("winning sigma / ridge width", fontsize=8, color=MUTED)
+
+axes[1].loglog(WIDTHS_PLOT, WIDTHS_PLOT ** -2, "o-", color=MUTED, lw=1.6,
+               label="raw  (p = 0)")
+for label, power in POWERS.items():
+    colour = C_ONE if power == 1.5 else C_TWO
+    axes[1].loglog(WIDTHS_PLOT, [ridge_peak_value(w, power) for w in WIDTHS_PLOT],
+                   "o-", color=colour, lw=1.8, label=label)
+recede(axes[1], "detection value against ridge width")
+axes[1].set_xlabel("ridge width w", fontsize=8, color=MUTED)
+axes[1].set_ylabel("value at the winning scale", fontsize=8, color=MUTED)
+axes[1].legend(frameon=False, fontsize=8)
+fig.tight_layout()
+
+for label, power in POWERS.items():
+    values = np.array([ridge_peak_value(w, power) for w in WIDTHS_PLOT])
+    slope = np.polyfit(np.log(WIDTHS_PLOT), np.log(values), 1)[0]
+    print(f"log-log slope of the detection value, {label}:", round(float(slope), 2))
+```
+
+The right panel is the same statement as §2's table, as a curve. The raw
+response and the $p = 3/2$ response both fall with width; only $p = 2$ is flat.
+A single detection value cannot be both flat across widths and calibrated to
+the winning scale.
+
+### 8.2 The same statement on the filter
+
+The synthetic pair of §2, widths 1.5 and 6, on the scale scan
+$(1, 2, 3, 4, 6, 8)$. The table gives the winning scale and the detection value
+at each ridge centre.
+
+```{code-cell} ipython3
+per_scale = meijering_core(ridges, SCAN, how="none", black_ridges=False)[1]
+CENTRE_COLS = {"narrow (w = 1.5)": 60, "wide (w = 6)": 170}
+rows_out = []
+for label, power in POWERS.items():
+    row = {"factor": label}
+    for probe, col in CENTRE_COLS.items():
+        curve = np.array([per_scale[s][N // 2, col] * s ** power for s in SCAN])
+        row[f"{probe}: winner"] = SCAN[int(np.argmax(curve))]
+        row[f"{probe}: value"] = round(float(curve.max()), 4)
+    rows_out.append(row)
+show_table(pd.DataFrame(rows_out).set_index("factor"))
+```
+
+```{code-cell} ipython3
+CURVES = {"raw  (p = 0)": 0.0, "sigma**1.5  (gamma = 3/4)": 1.5,
+          "sigma**2  (gamma = 1)": 2.0}
+fig, axes = plt.subplots(1, 3, figsize=(11.0, 3.0))
+for ax, (label, power) in zip(axes, CURVES.items()):
+    for (probe, col), shade in zip(CENTRE_COLS.items(), (C_ONE, C_TWO)):
+        curve = np.array([per_scale[s][N // 2, col] * s ** power for s in SCAN])
+        ax.plot(SCAN, curve, "o-", color=shade, lw=1.6, ms=4, label=probe)
+        peak = int(np.argmax(curve))
+        ax.plot([SCAN[peak]], [curve[peak]], "o", ms=9, mfc="none", mec=INK)
+    recede(ax, label)
+    ax.set_xlabel("sigma", fontsize=8, color=MUTED)
+axes[0].set_ylabel("response at ridge centre", fontsize=8, color=MUTED)
+axes[0].legend(frameon=False, fontsize=7)
+fig.tight_layout()
+```
+
+The left panel has no interior peak: the raw response falls at every scale. The
+middle panel peaks at 2 and 6, the grid points nearest the two widths (for the
+narrow ridge, 1 and 2 are equally near), and the two peak values differ by a
+factor of 1.9. The right panel peaks at $w\sqrt2$, at 2 and 8, and the two peak
+values are equal in the table. The width map needs $p = 3/2$; a detection map
+with one value for every width needs $p = 2$.
+
+### 8.3 Two maps from one image
+
+A tapered ridge, whose width grows from 1.5 to 8 pixels down the frame. Each
+column of the figure is one exponent. The top row is the width map, coloured by
+the winning scale, and masked where the fused response is weak. The bottom row
+is the detection map, and the centreline profile of the winning scale against
+the true width.
+
+```{code-cell} ipython3
+OUTPUT = {}
+for power in (1.5, 2.0):
+    det, win = detection_and_width(tapered, DENSE, power)
+    OUTPUT[power] = (det, np.where(det < 0.15 * det.max(), np.nan, win))
+
+fig, axes = plt.subplots(2, 3, figsize=(11.5, 6.0))
+bare(axes[0, 0], "input; true width grows downward")
+axes[0, 0].imshow(tapered, cmap=SEQ)
+for ax, (label, power) in zip(axes[0, 1:], POWERS.items()):
+    im = ax.imshow(OUTPUT[power][1], cmap="viridis", vmin=1, vmax=9)
+    bare(ax, f"width map: {label}")
+    fig.colorbar(im, ax=ax, fraction=0.046, label="winning sigma")
+for ax, (label, power) in zip(axes[1, :2], POWERS.items()):
+    im = ax.imshow(OUTPUT[power][0], cmap=SEQ, vmin=0,
+                   vmax=max(d.max() for d, _ in OUTPUT.values()))
+    bare(ax, f"detection map: {label}")
+    fig.colorbar(im, ax=ax, fraction=0.046)
+axes[1, 2].plot(true_w[:, 0], np.arange(H), color=INK, lw=1.8, label="true width")
+for (label, power), colour in zip(POWERS.items(), (C_ONE, C_TWO)):
+    axes[1, 2].plot(OUTPUT[power][1][:, W // 2], np.arange(H), color=colour, lw=1.5,
+                    label=f"width map, {label.split(' ')[0]}")
+recede(axes[1, 2], "centreline: winning sigma against true width")
+axes[1, 2].set_xlabel("sigma  (and true width)", fontsize=8, color=MUTED)
+axes[1, 2].legend(frameon=False, fontsize=7)
+fig.tight_layout()
+```
+
+The width map at $p = 3/2$ tracks the taper, and at $p = 2$ it sits above it,
+because a $\sigma^2$-normalised filter peaks at $w\sqrt2$. The detection map at
+$p = 3/2$ fades as the ridge widens; at $p = 2$ it stays bright down the whole
+taper. The continuous model relates the two winning scales by a constant,
+$\sigma^\ast(2) / \sigma^\ast(3/2) = \sqrt2$, so the two width maps carry the same
+information; $p = 3/2$ only saves the factor of $\sqrt2$. On the discrete grid
+the factor varies, which is why the two lines in the profile do not differ by a
+constant offset.
+
+```{code-cell} ipython3
+print("continuous model: sigma*(gamma=1) / sigma*(gamma=3/4) =",
+      ridge_peak_sigma(1.0, 2.0) / ridge_peak_sigma(1.0, 1.5), "= sqrt(2)")
+```
+
+So `meijering` returns the detection map only. The exponent decides what that
+map is: flat in width at $p = 2$, or width-weighted at $p = 3/2$. Neither
+exponent turns the detection map into the width map. To return the width map,
+the function must return the argmax as a second output.
+
+## 9. What the comparators do
+
+ITK and DIPlib have no Meijering filter. The comparison is with their
+Hessian-based siblings, ITK's Frangi objectness and DIPlib's Frangi vesselness.
+
+ITK's multiscale objectness filter returns two images: the detection map, and,
+through `GenerateScalesOutput`, the scale that won at each pixel. That second
+image is a width map. `meijering` has no counterpart for it.
+
+```{code-cell} ipython3
+import time
+import IPython.terminal.pt_inputhooks  # diplib registers an input hook on import
+import itk
+import diplib as dip
+
+ITK_F2 = itk.Image[itk.F, 2]
+ITK_HESSIAN = itk.Image[itk.SymmetricSecondRankTensor[itk.D, 2], 2]
+
+
+def itk_objectness_and_scale(image, sigma_min, sigma_max, steps, gamma=0.5):
+    """ITK multiscale Frangi objectness: the detection map and the winning scale."""
+    measure = itk.HessianToObjectnessMeasureImageFilter[ITK_HESSIAN, ITK_F2].New()
+    measure.SetObjectDimension(1)
+    measure.SetBrightObject(True)
+    measure.SetAlpha(0.5)
+    measure.SetBeta(0.5)
+    measure.SetGamma(gamma)
+    measure.SetScaleObjectnessMeasure(False)
+    multiscale = itk.MultiScaleHessianBasedMeasureImageFilter[
+        ITK_F2, ITK_HESSIAN, ITK_F2
+    ].New()
+    multiscale.SetInput(itk.GetImageFromArray(np.ascontiguousarray(image, np.float32)))
+    multiscale.SetHessianToMeasureFilter(measure)
+    multiscale.SetSigmaMinimum(sigma_min)
+    multiscale.SetSigmaMaximum(sigma_max)
+    multiscale.SetNumberOfSigmaSteps(steps)
+    multiscale.SetGenerateScalesOutput(True)
+    multiscale.Update()
+    return (itk.GetArrayFromImage(multiscale.GetOutput()),
+            itk.GetArrayFromImage(multiscale.GetScalesOutput()))
+
+
+started = time.perf_counter()
+itk_detection, itk_scale = itk_objectness_and_scale(tapered, 1.0, 8.0, 8)
+print(f"ITK multiscale objectness: {time.perf_counter() - started:.1f} s")
+itk_scale = np.where(itk_detection < 0.15 * itk_detection.max(), np.nan, itk_scale)
+print("ITK winning scale down the ridge centreline:",
+      [round(float(itk_scale[row, W // 2]), 2) for row in (0, H // 2, H - 1)])
+```
+
+ITK normalises its derivatives across scale. The switch is
+`NormalizeAcrossScale`, and it multiplies an order-$n$ derivative by
+$\sigma^n$, which is Lindeberg's $\gamma = 1$.
+
+```{code-cell} ipython3
+def itk_hessian(image, sigma, normalize):
+    """ITK's Hessian entry Hrr, with and without the across-scale normalisation."""
+    hessian = itk.HessianRecursiveGaussianImageFilter.New(
+        itk.GetImageFromArray(np.ascontiguousarray(image, np.float32)))
+    hessian.SetSigma(sigma)
+    hessian.SetNormalizeAcrossScale(normalize)
+    hessian.Update()
+    return itk.GetArrayFromImage(hessian.GetOutput())[..., 0]
+
+
+plain = itk_hessian(tapered, 3.0, False)
+normalised = itk_hessian(tapered, 3.0, True)
+live = np.abs(plain) > 1e-6
+print("ITK normalised / plain Hessian, median over live pixels:",
+      round(float(np.median(normalised[live] / plain[live])), 4),
+      "   sigma**2 =", 3.0**2)
+```
+
+DIPlib's `FrangiVesselness` is single scale. Its docstring gives one sigma and
+one pair of parameters, and §5.4 quotes its documented multiscale recipe:
+multiply the input by $\sigma^2$ and take the supremum over scales. The caller
+does that, not the function. So DIPlib returns neither a fused detection map nor
+a width map; its recipe produces a detection map.
+
+```{code-cell} ipython3
+print([line for line in dip.FrangiVesselness.__doc__.splitlines()
+       if "single scale" in line][0].strip())
+```
+
+```{code-cell} ipython3
+fig, axes = plt.subplots(1, 2, figsize=(9.0, 3.2))
+im0 = axes[0].imshow(itk_detection, cmap=SEQ)
+bare(axes[0], "ITK: detection map")
+fig.colorbar(im0, ax=axes[0], fraction=0.046)
+im1 = axes[1].imshow(itk_scale, cmap="viridis", vmin=1, vmax=8)
+bare(axes[1], "ITK: width map (scales output)")
+fig.colorbar(im1, ax=axes[1], fraction=0.046, label="winning sigma")
+fig.tight_layout()
+```
+
+The two ITK rows come from the cells above. The other rows are read from each
+library's source or documentation.
+
+```{code-cell} ipython3
+comparators = [
+    ("ITK objectness (multiscale)", "sigma**2 (NormalizeAcrossScale)", "no",
+     "yes (scales output)"),
+    ("DIPlib FrangiVesselness", "sigma**2 (caller recipe)", "no",
+     "no (single scale)"),
+    ("Jerman (reference MATLAB)", "sigma**2 on the Hessian", "tau * max(lambda3)",
+     "no"),
+    ("skimage sato", "sigma**2", "no", "no"),
+    ("skimage frangi (this tree)", "sigma**2 on S", "no", "no"),
+    ("skimage meijering (shipped)", "none", "divide by each scale's max", "no"),
+]
+show_table(pd.DataFrame(
+    comparators,
+    columns=["filter", "local sigma power", "per-scale image statistic", "width map"],
+).set_index("filter"))
+```
+
+Three conclusions follow from the table.
+
+1. Every comparator uses a local $\sigma$ power. None uses a per-scale image
+   statistic for the fused map. Jerman's `tau * max(lambda3)` is the nearest
+   exception, and shipped `meijering` is the outlier in this group.
+2. The comparator exponent is $\sigma^2$. DIPlib documents it, and ITK's
+   `NormalizeAcrossScale` is $\sigma^2$ measured above.
+3. ITK is the only comparator that returns a width map. It returns the width
+   map as a *separate output*, not by an exponent that makes the detection
+   value depend on the width. The detection map and the width map are two
+   images, not two readings of one.
+
+## 10. Relation to the frangi work
+
+`frangi` and `meijering` share the file `filters/ridges.py`, the scale loop, and
+the cross-scale maximum, so `on_frangi.md` and `frangi_refactor_plan.md` bear on
+this notebook directly. Three results transfer.
+
+**The exponent is a goal choice, and the sibling filter has settled it both
+ways.** `frangi_refactor_plan.md` §1a resolves `frangi` to $\sigma^2$ (its paper
+equation (2) at $\gamma = 1$), and the `frangi-fixes` branch implements it. On
+the bar picture of `frangi_testing.md` the spread of the detection value over
+widths 1, 2, 4 and 8 falls from 220x with no exponent to 3.7x at $p = 3/2$ and
+1.0x at $p = 2$. This notebook's §8.2 fixture gives the same ordering; the cell
+below repeats the measurement.
+
+```{code-cell} ipython3
+spreads = []
+for label, power in (("p = 0 (raw)", 0.0), ("p = 1.5 (gamma = 3/4)", 1.5),
+                     ("p = 2 (gamma = 1)", 2.0)):
+    values = [max(per_scale[s][N // 2, col] * s ** power for s in SCAN)
+              for col in CENTRE_COLS.values()]
+    spreads.append({"exponent": label,
+                    "narrow (w = 1.5)": round(values[0], 4),
+                    "wide (w = 6)": round(values[1], 4),
+                    "narrow / wide": round(values[0] / values[1], 2)})
+show_table(pd.DataFrame(spreads).set_index("exponent"))
+```
+
+**A frozen $\gamma$ is not scale-neutral.** `on_meijering.md` §1 is corrected
+above: the structuredness gate is not linear in $S$, so one value of $\gamma$
+used at every scale still reweights the scales against each other. `on_frangi.md`
+§5.1 measures the change in the winning scale at 18% of the pixels with
+$V > 0.01$. A per-scale divisor is the larger effect, at 45% of the same set,
+but a frozen $\gamma$ is the milder of the two, not an innocent one.
+
+**A per-scale divisor makes a $\sigma$ power inert.** `frangi_refactor_plan.md`
+§6 warns against adding $\sigma^2$ to `meijering` while the per-scale `/max`
+stays: the divisor cancels any per-scale positive factor, measured at 2.2e-16
+on `camera` and 3.3e-16 on `coins`. So the exponent and the `/max` are one
+decision, not two. The exponent only matters once the `/max` is removed.
+
+One warning transfers as well. `frangi_testing.md` §9.1 records a trap: a test
+that resolves $\gamma$ from a single scale pins the strongest pixel to
+$1 - e^{-2}$ and divides out the scale dependence the test means to measure.
+`meijering`'s per-scale `/max` does the same thing to every scale, because it
+pins each scale's peak to 1. Any "which $\sigma$ wins" scan on the shipped
+filter is partly a scan of the shape of the normalised response, not of the raw
+scale dependence.
+
+The two filters are not governed by the same rule for the global statistic.
+`frangi` keeps `gamma=None` because that default is Frangi's own published
+heuristic, and the repair there is documentation. `meijering`'s per-scale
+`/max` is not the paper's: the paper's $\rho = \lambda/\lambda_{\min}$ is one
+global rescale, and the per-scale divisor is scikit-image's multiscale
+extension. The `frangi` precedent does not apply to it.
+
+**The published cross-reference.** `on_frangi.md` §12 says the two filters
+"should not answer [the exponent] differently". With §8 and §9 the two
+notebooks do agree: the detection map takes $\sigma^2$ in both, and
+$\gamma = 3/4$ is a width-map calibration in both.
+
+## 11. What to do with the multiscale normalisation
+
+**Single scale.** Keep $\rho \propto \lambda/\lambda_{\min}$, and use
+$\alpha = -1/(\mathrm{ndim}+1)$ as the docstring already claims. No $\sigma$
+power is needed when `sigmas` has one entry.
+
+**Multiscale detection map.** Replace the per-scale `/max` with a local
+$\sigma$ power, take the pixel-wise maximum, and optionally normalise the fused
+map once. Use
+
+$$
+r(\sigma, x) = \sigma^2\,\max(e(\sigma, x), 0),
+$$
+
+which is $\gamma = 1$. This matches DIPlib's documented recipe, ITK's
+`NormalizeAcrossScale`, `sato`, and the repaired `frangi`, and it makes the
+detection value independent of the ridge width (§8.1). The paper's $\rho$ map,
+applied once after fusion, gives a $[0, 1]$ image for display or costs.
+
+**Width map.** If the winning scale is wanted, return it as a second output,
+as ITK does. The choice of exponent for that map is $\sigma^{3/2}$
+($\gamma = 3/4$), which makes the winning scale equal the ridge width, or
+$\sigma^2$ with a factor of $\sqrt2$ divided out. Do not set the *detection*
+exponent to $3/2$ to get a width map: the detection value then falls as
+$w^{-1/2}$ and wide vessels return weaker values than narrow ones of the same
+contrast.
+
+**Why not $\gamma = 3/4$ for the detection map.** Lindeberg's $\gamma = 3/4$ is
+a scale-selection calibration. It makes the argmax of the response equal the
+ridge width. That calibration is correct for a width map, and §4 and §5.1
+measure it. It is not a rule for the fused value, and applying it there weakens
+the detection of wide structures.
+
+**Tests.** The rules of `frangi_testing.md` §9 apply: hold the normalisation
+fixed across a scale scan, assert exact grid matches where the answer is exact,
+and keep $\sigma \ge 1$ until `hessian_matrix` is fixed. Pin two properties
+directly: the detection value is independent of the ridge width under the chosen
+exponent, and the width map (if returned) tracks the true width.
+`test_meijering_alpha_suppresses_blobs` of §6 covers the $\alpha$ sign.
 
 ```{code-cell} ipython3
 print(f"scikit-image {ski.__version__}")

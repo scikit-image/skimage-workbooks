@@ -19,14 +19,27 @@ one is inherited from `hessian_matrix` and is fixed in `on_hessian.md`. This
 notebook takes them one at a time: what the filter is supposed to do, what it
 does, the smallest example that shows the difference, and a runnable repair.
 
-| | defect | consequence | status upstream |
+| | defect | consequence | state in this tree |
 | --- | --- | --- | --- |
-| D1 | the wrong-sign rejection is defeated when $\lambda_1 = 0$ | `black_ridges` has **no effect** on an ideal ridge | residue of [#6436](https://github.com/scikit-image/scikit-image/issues/6436), not reported |
-| D2 | no scale normalisation on the Hessian | ideal ridges never select their width; non-trivial vesselness collapses to the finest σ | [#7711](https://github.com/scikit-image/scikit-image/issues/7711), open |
-| D3 | `gamma=None` is resolved *inside* the σ loop | output depends on the **order** of `sigmas` | not reported |
-| D4 | `gamma=None` exposes Frangi's whole-image contrast heuristic without documenting its scope | one distant pixel changes the answer | the global $c$ heuristic is in Frangi; the API consequence is noted in [#6436](https://github.com/scikit-image/scikit-image/issues/6436) |
+| D1 | the wrong-sign rejection is defeated when $\lambda_1 = 0$ | `black_ridges` has **no effect** on an ideal ridge | residue of [#6436](https://github.com/scikit-image/scikit-image/issues/6436); repaired in `frangi-fixes` |
+| D2 | no scale normalisation on the Hessian | ideal ridges never select their width; non-trivial vesselness collapses to the finest σ | [#7711](https://github.com/scikit-image/scikit-image/issues/7711); repaired in `frangi-fixes` |
+| D3 | `gamma=None` is resolved *inside* the σ loop | output depends on the **order** of `sigmas` | repaired in `frangi-fixes` |
+| D4 | `gamma=None` exposes Frangi's whole-image contrast heuristic without documenting its scope | one distant pixel changes the answer | the global $c$ heuristic is in Frangi; unchanged by the repairs, documented only |
 | D5 | border error from the two-pass Hessian | a bright rim, large relative to the output range | `on_hessian.md`, fixes A and C |
-| D6 | `alpha` is documented but inert in 2-D | a parameter that does nothing, silently | noted in [#6436](https://github.com/scikit-image/scikit-image/issues/6436) |
+| D6 | `alpha` is documented but inert in 2-D | a parameter that does nothing, silently | a docstring line |
+
+Two code states appear through the notebook.
+
+- **Pre-fix** is `frangi` as released before the `frangi-fixes` branch: no
+  `sigma**2` on the Hessian norm, a clipped divide in place of the sign test,
+  and `gamma=None` resolved once, from the first scale.
+- **Post-fix** is the branch: `sigma**2` on the Hessian norm, an explicit sign
+  test, and `gamma=None` resolved over every scale.
+
+The notebook carries both implementations, as `frangi_prefix` and
+`frangi_postfix` in §1, and uses them for every result. It does not call the
+installed `frangi` for any measurement, so its answers do not depend on the
+installed version. One cell in §1 reports which state the installation matches.
 
 D3 and D4 are the subject of `on_meijering.md`'s sibling argument: both filters
 let a whole-image number into the loop, but D3 is an order-dependent
@@ -139,7 +152,7 @@ Three things about that expression drive everything below.
   `alpha` never enters (that is D6).
 
 ```{code-cell} ipython3
-# Frangi's three quantities at each pixel, from the shipped Hessian.
+# Frangi's three quantities at each pixel, from the released Hessian.
 def eigen_pair(image, sigma, mode="reflect", power=0.0):
     """Hessian eigenvalues, ordered by increasing magnitude, times sigma**power."""
     eigvals = hessian_matrix_eigvals(
@@ -148,13 +161,104 @@ def eigen_pair(image, sigma, mode="reflect", power=0.0):
     return eigvals * sigma**power
 
 
-def shipped_parts(image, sigma, beta=0.5, **kwargs):
-    """Blobness and S exactly as `frangi` computes them, clip included."""
+def prefix_parts(image, sigma, beta=0.5, **kwargs):
+    """Blobness and S as the pre-fix `frangi` computes them, clip included."""
     eigvals = eigen_pair(image, sigma, **kwargs)
     lambda1 = eigvals[0]
-    lambda2 = np.maximum(eigvals[1], 1e-10)          # the clip, as shipped
+    lambda2 = np.maximum(eigvals[1], 1e-10)          # the clip of the pre-fix code
     r_b = abs(lambda1) / lambda2
     return np.exp(-r_b**2 / (2 * beta**2)), np.sqrt((eigvals**2).sum(0))
+```
+
+### 1.1 The two code states
+
+The notebook carries both implementations in full, so it does not depend on the
+installed `frangi`. `frangi_prefix` is the released filter. `frangi_postfix` is
+the same filter after the three repairs. Both handle 2-D and 3-D.
+
+```{code-cell} ipython3
+def frangi_prefix(image, sigmas, alpha=0.5, beta=0.5, gamma=None,
+                  black_ridges=True, mode="reflect", cval=0):
+    """`frangi` in the **pre-fix** state, before the `frangi-fixes` branch.
+
+    No `sigma**2`, the clipped divide for the sign rejection, and `gamma=None`
+    resolved once, from the first scale of the loop.  This reproduces the
+    released filter.
+    """
+    image = np.asarray(image, dtype=float)
+    sigmas = list(sigmas)
+    if not black_ridges:
+        image = -image
+    filtered_max = np.zeros_like(image)
+    for sigma in sigmas:
+        eigvals = hessian_matrix_eigvals(hessian_matrix(
+            image, sigma, mode=mode, cval=cval, use_gaussian_derivatives=True))
+        eigvals = np.take_along_axis(eigvals, abs(eigvals).argsort(0), 0)
+        lambda1 = eigvals[0]
+        if image.ndim == 2:
+            (lambda2,) = np.maximum(eigvals[1:], 1e-10)
+            r_a = np.inf
+            r_b = abs(lambda1) / lambda2
+        else:  # ndim == 3
+            lambda2, lambda3 = np.maximum(eigvals[1:], 1e-10)
+            r_a = lambda2 / lambda3
+            r_b = abs(lambda1) / np.sqrt(lambda2 * lambda3)
+        s = np.sqrt((eigvals**2).sum(0))
+        if gamma is None:
+            gamma = s.max() / 2
+            if gamma == 0:
+                gamma = 1
+        vals = 1.0 - np.exp(-(r_a**2) / (2 * alpha**2))
+        vals *= np.exp(-(r_b**2) / (2 * beta**2))
+        vals *= 1.0 - np.exp(-(s**2) / (2 * gamma**2))
+        filtered_max = np.maximum(filtered_max, vals)
+    return filtered_max
+```
+
+```{code-cell} ipython3
+def frangi_postfix(image, sigmas, alpha=0.5, beta=0.5, gamma=None,
+                   black_ridges=True, mode="reflect", cval=0):
+    """`frangi` in the **post-fix** state, after the `frangi-fixes` branch.
+
+    `sigma**2` on the Hessian norm, an explicit sign test, and `gamma=None`
+    resolved over every scale.
+    """
+    image = np.asarray(image, dtype=float)
+    sigmas = list(sigmas)
+    if not black_ridges:
+        image = -image
+    if gamma is None:
+        peaks = []
+        for sigma in sigmas:
+            eigvals = hessian_matrix_eigvals(hessian_matrix(
+                image, sigma, mode=mode, cval=cval,
+                use_gaussian_derivatives=True))
+            peaks.append((sigma**2 * np.sqrt((eigvals**2).sum(0))).max())
+        gamma = max(peaks) / 2 if peaks else 1.0
+        if gamma == 0:
+            gamma = 1
+    filtered_max = np.zeros_like(image)
+    for sigma in sigmas:
+        eigvals = hessian_matrix_eigvals(hessian_matrix(
+            image, sigma, mode=mode, cval=cval, use_gaussian_derivatives=True))
+        eigvals = np.take_along_axis(eigvals, abs(eigvals).argsort(0), 0)
+        lambda1 = eigvals[0]
+        wanted = np.all(eigvals[1:] > 0, axis=0)
+        shape = np.zeros_like(image)
+        if image.ndim == 2:
+            safe = np.where(wanted, eigvals[1], 1.0)
+            shape[wanted] = np.exp(-(lambda1[wanted] / safe[wanted])**2
+                                   / (2 * beta**2))
+        else:  # ndim == 3
+            safe2 = np.where(wanted, eigvals[1], 1.0)
+            safe3 = np.where(wanted, eigvals[2], 1.0)
+            plate = 1.0 - np.exp(-((safe2 / safe3)**2) / (2 * alpha**2))
+            blobness = np.exp(-(lambda1**2 / (safe2 * safe3)) / (2 * beta**2))
+            shape[wanted] = (plate * blobness)[wanted]
+        s = sigma**2 * np.sqrt((eigvals**2).sum(0))
+        filtered_max = np.maximum(
+            filtered_max, shape * (1.0 - np.exp(-(s**2) / (2 * gamma**2))))
+    return filtered_max
 ```
 
 The reference photograph and the σ list used throughout.
@@ -166,11 +270,23 @@ N = 128
 rows, cols = np.indices((N, N), dtype=float)
 ```
 
+The installed version matches one state and not the other. The notebook uses the
+two implementations above for every later result, so the match below is
+informational only.
+
+```{code-cell} ipython3
+print(f"installed scikit-image {ski.__version__}")
+installed = np.asarray(frangi(PHOTO, sigmas=SIGMAS), float)
+for label, impl in (("pre-fix", frangi_prefix), ("post-fix", frangi_postfix)):
+    gap = np.abs(np.asarray(impl(PHOTO, SIGMAS), float) - installed).max()
+    print(f"   installed matches {label:<9}: max |difference| = {gap:.2e}")
+```
+
 ## 2. D1 — `black_ridges` has no effect on an ideal ridge
 
 Frangi's rule is that a wrong-sign eigenvalue means "not a vessel". In the
 paper this is an explicit zero branch in the 2-D and 3-D equations. The
-clipped-denominator mechanism below is scikit-image's implementation, not the
+clipped-denominator mechanism below is the **pre-fix** implementation, not the
 paper's derivation. If $\lambda_2$ has the wrong sign, the intended response is
 zero; the implementation only gets that result when the other eigenvalue does
 not also clip to zero.
@@ -189,12 +305,13 @@ $\exp(0) = 1$: full marks, for a ridge of precisely the wrong polarity.
 bright = np.exp(-((cols - 64) ** 2) / (2 * 3.0**2))      # a BRIGHT ridge
 centre = (64, 64)
 
-print("value at the ridge centre; `black_ridges=True` asks for DARK ridges")
+print("value at the ridge centre, pre-fix frangi;"
+      " `black_ridges=True` asks for DARK ridges")
 for polarity in (True, False):
-    out = frangi(bright, sigmas=[3], black_ridges=polarity)
+    out = frangi_prefix(bright, sigmas=[3], black_ridges=polarity)
     print(f"   black_ridges={str(polarity):<6} {out[centre]:.6f}")
 print(f"\nthe two outputs are identical everywhere:"
-      f" {np.array_equal(frangi(bright, sigmas=[3]), frangi(bright, sigmas=[3], black_ridges=False))}")
+      f" {np.array_equal(frangi_prefix(bright, sigmas=[3]), frangi_prefix(bright, sigmas=[3], black_ridges=False))}")
 ```
 
 The mechanism, read off the eigenvalues across the ridge.
@@ -202,7 +319,7 @@ The mechanism, read off the eigenvalues across the ridge.
 ```{code-cell} ipython3
 lam = eigen_pair(bright, 3)
 row = lam[:, 64, :]
-blob, _ = shipped_parts(bright, 3)
+blob, _ = prefix_parts(bright, 3)
 
 # The shaded band is computed, not drawn by hand: it is exactly the set of
 # columns whose larger-magnitude eigenvalue has the wrong sign.
@@ -270,7 +387,7 @@ def leak_census(image, sigmas, beta=BETA):
     for sigma in sigmas:
         eigvals = eigen_pair(image, sigma)
         wrong = eigvals[1] < 0                 # wrong sign for black_ridges=True
-        blobness, _ = shipped_parts(image, sigma)
+        blobness, _ = prefix_parts(image, sigma)
         out.append({"sigma": sigma,
                     "wrong-sign pixels": f"{wrong.mean():.1%}",
                     "smallest |lambda1| there": f"{np.abs(eigvals[0][wrong]).min():.2e}",
@@ -322,7 +439,7 @@ if ((m_BrightObject && sortedEigenValues[i] > 0.0) ||
 The same thing in NumPy, keeping the division away from the masked pixels:
 
 ```{code-cell} ipython3
-def fixed_parts(image, sigma, beta=0.5, power=0.0, **kwargs):
+def postfix_parts(image, sigma, beta=0.5, power=0.0, **kwargs):
     """Blobness and S with an explicit sign test instead of a clipped divide."""
     eigvals = eigen_pair(image, sigma, power=power, **kwargs)
     lambda1, lambda2 = eigvals[0], eigvals[1]
@@ -341,7 +458,7 @@ def single_scale(parts_fn, image, sigma, gamma, black_ridges=True):
 
 GAMMA_DEMO = np.sqrt((eigen_pair(bright, 3) ** 2).sum(0)).max() / 2
 report = {}
-for label, fn in (("shipped", shipped_parts), ("sign test", fixed_parts)):
+for label, fn in (("pre-fix", prefix_parts), ("post-fix", postfix_parts)):
     report[label] = {
         "black_ridges=True": single_scale(fn, bright, 3, GAMMA_DEMO, True)[centre],
         "black_ridges=False": single_scale(fn, bright, 3, GAMMA_DEMO, False)[centre],
@@ -359,11 +476,12 @@ ridge was scoring exactly it.
 ## 3. D2 — no scale normalization for ideal ridges
 
 `frangi` is documented as returning the "maximum of pixels across all scales",
-which allows different scales to win. On an ideal straight ridge, however,
-$S$ falls with σ while blobness stays pegged at 1, so the unnormalized
-structuredness term cannot select the ridge width. That is the scale-normalization
-problem reported by issue #7711. The paper itself says that its maximum occurs
-at a scale approximately matching vessel size; the stronger finest-scale result
+which allows different scales to win. On an ideal straight ridge, however, in
+the pre-fix code $S$ falls with σ while blobness stays pegged at 1, so the
+unnormalised structuredness term cannot select the ridge width. That is the
+scale-normalisation problem reported by issue #7711. The paper itself says that
+its maximum occurs at a scale approximately matching vessel size; the stronger
+finest-scale result
 below is for the ideal ridge model and this implementation. The argument also
 needs care: $R_b$ is invariant under *scaling* the Hessian, not under *changing*
 σ, which re-smooths the image and can move $R_b$. Scale selection through
@@ -470,7 +588,7 @@ def along_ridge(width):
     worst_lambda1, least_blobness = 0.0, 1.0
     for sigma in SCAN:
         eigvals = eigen_pair(ridge, sigma)
-        blobness, _ = shipped_parts(ridge, sigma)
+        blobness, _ = prefix_parts(ridge, sigma)
         worst_lambda1 = max(worst_lambda1, abs(eigvals[0][MIDDLE]))
         least_blobness = min(least_blobness, blobness[MIDDLE])
     return worst_lambda1, least_blobness
@@ -492,7 +610,7 @@ show_table(pd.DataFrame(rows_30).set_index("ridge width w"))
 $S$ falls monotonically at every width, tracks the continuous law to within a
 percent, and $\lambda_1$ is zero — not small, zero — at every scale on the
 scan, so blobness never leaves 1. On an ideal ridge the only σ-dependence left
-really is $S$, which is what makes the shipped filter's maximum over scales
+really is $S$, which is what makes the pre-fix filter's maximum over scales
 collapse onto the finest one.
 
 ```{code-cell} ipython3
@@ -500,7 +618,7 @@ WIDTHS = (2.0, 4.0, 6.0)
 fig, axes = plt.subplots(1, 3, figsize=(11.5, 3.0), sharex=True)
 for ax, power, label in zip(
         axes, (0.0, 1.5, 2.0),
-        (r"$S$  (as shipped)", r"$\sigma^{1.5} S$  ($\gamma=3/4$)",
+        (r"$S$  (pre-fix)", r"$\sigma^{1.5} S$  ($\gamma=3/4$)",
          r"$\sigma^{2} S$  ($\gamma=1$)")):
     for width, colour in zip(WIDTHS, (C_ONE, C_TWO, C_THREE)):
         curve = PROFILES[width] * SCAN**power
@@ -517,7 +635,7 @@ fig.suptitle("D2: without a σ power the peak is at the smallest σ for every wi
 fig.tight_layout()
 ```
 
-The left panel is the shipped filter: three ridges of quite different width,
+The left panel is the pre-fix filter: three ridges of quite different width,
 three curves that all peak at the smallest scale on the scan. The other two
 panels apply Lindeberg's γ-normalisation, a factor $\sigma^{2\gamma}$ on a
 second derivative. The peaks then land where the theory says.
@@ -550,7 +668,7 @@ it, without a σ power, the finest scale wins every time under the usual γ
 gamma_usual = np.sqrt((eigen_pair(PHOTO, SIGMAS[0]) ** 2).sum(0)).max() / 2
 stack_d2 = []
 for sigma in SIGMAS:
-    blob, norm = shipped_parts(PHOTO, sigma)
+    blob, norm = prefix_parts(PHOTO, sigma)
     stack_d2.append(blob * (1 - np.exp(-norm**2 / (2 * gamma_usual**2))))
 stack_d2 = np.stack(stack_d2)
 vmax_d2 = stack_d2.max(0)
@@ -576,7 +694,7 @@ def winners_at_gamma(gamma, floor=FLOOR_V):
     """Share of the live set won by each sigma, at one gamma."""
     stack = np.stack([blob * (1 - np.exp(-norm**2 / (2 * gamma**2)))
                       for blob, norm in
-                      (shipped_parts(PHOTO, sigma) for sigma in SIGMAS)])
+                      (prefix_parts(PHOTO, sigma) for sigma in SIGMAS)])
     fused, won = stack.max(0), np.array(SIGMAS)[stack.argmax(0)]
     live_here = fused > floor
     return live_here.mean(), {s: np.mean(won[live_here] == s) for s in SIGMAS}
@@ -612,9 +730,9 @@ $$
 so a second derivative carries $s^{2\gamma_L}$ and the Hessian is scaled as a
 whole. This $\gamma_L$ is the derivative-normalization exponent, not
 scikit-image's `gamma` argument. The API argument corresponds to Frangi's $c$,
-the structuredness threshold. scikit-image applies no derivative factor at all,
-which is $\gamma_L = 0$ — a boundary case for the ideal ridge model, where no
-finite scale is selected. Issue
+the structuredness threshold. The pre-fix code applies no derivative factor at
+all, which is $\gamma_L = 0$ — a boundary case for the ideal ridge model, where
+no finite scale is selected. Issue
 [#7711](https://github.com/scikit-image/scikit-image/issues/7711) reports the
 symptom directly: "Due to the missing scale corrections only the smallest scale
 affects the filter output."
@@ -634,7 +752,7 @@ ridge6 = np.exp(-((strip_cols - MIDDLE[1]) ** 2) / (2 * 6.0**2))
 
 rows_out = []
 for power in (0.0, 1.5, 2.0):
-    parts = {s: fixed_parts(-ridge6, s, power=power) for s in SIGMA_GRID}
+    parts = {s: postfix_parts(-ridge6, s, power=power) for s in SIGMA_GRID}
     # Docstring rule: gamma = half the largest Hessian norm over the scan.
     gamma = max(norm.max() for _, norm in parts.values()) / 2
     scores = {s: (b * (1 - np.exp(-n**2 / (2 * gamma**2))))[MIDDLE]
@@ -653,8 +771,8 @@ tie count confirming the winner is unique.
 
 ## 4. D3 — the answer depends on the order of `sigmas`
 
-`gamma=None` is resolved like this, with the assignment *inside* the scale
-loop:
+In the pre-fix code, `gamma=None` is resolved with the assignment *inside* the
+scale loop:
 
 ```python
 for sigma in sigmas:                       # <- the loop
@@ -697,8 +815,8 @@ CENTRES, WIDTHS_DEMO = (20, 48, 76), (1.2, 3.0, 6.0)
 three = sum(np.exp(-((cols - c) ** 2) / (2 * w**2))
             for c, w in zip(CENTRES, WIDTHS_DEMO))
 TRIPLE = (1, 3, 6)
-up = frangi(three, sigmas=TRIPLE, black_ridges=False)
-down = frangi(three, sigmas=TRIPLE[::-1], black_ridges=False)
+up = frangi_prefix(three, sigmas=TRIPLE, black_ridges=False)
+down = frangi_prefix(three, sigmas=TRIPLE[::-1], black_ridges=False)
 
 fig, axes = plt.subplots(1, 4, figsize=(11.5, 2.5),
                          gridspec_kw={"width_ratios": [1, 1, 1, 1.5]})
@@ -743,7 +861,7 @@ first element: six permutations, three predicted classes.
 ```{code-cell} ipython3
 orbit = {}
 for perm in permutations(SIGMAS[:3]):
-    orbit.setdefault(round(float(frangi(PHOTO, sigmas=perm).sum()), 6), []).append(perm)
+    orbit.setdefault(round(float(frangi_prefix(PHOTO, sigmas=perm).sum()), 6), []).append(perm)
 
 print(f"{len(orbit)} distinct outputs from 6 permutations;"
       f" total response spans a factor of {max(orbit) / min(orbit):.0f}")
@@ -782,10 +900,10 @@ for s, g in gammas.items():
 ### 4.2 The fix: resolve γ before the loop
 
 Vesselness splits cleanly at γ, so the scale loop can compute everything else
-first — at one Hessian per σ, the same number the shipped loop performs.
+first — at one Hessian per σ, the same number the pre-fix loop performs.
 
 ```{code-cell} ipython3
-def frangi_cache(image, sigmas, parts_fn=fixed_parts, power=0.0,
+def frangi_cache(image, sigmas, parts_fn=postfix_parts, power=0.0,
                  black_ridges=True, mode="reflect"):
     """`parts_fn` at every scale, computed once."""
     image = image.astype(float, copy=False)
@@ -810,37 +928,39 @@ def resolved_gamma(cached):
 
 ```{code-cell} ipython3
 def hoisted(image, sigmas, **kwargs):
-    cached = frangi_cache(image, sigmas, parts_fn=shipped_parts, **kwargs)
+    cached = frangi_cache(image, sigmas, parts_fn=prefix_parts, **kwargs)
     return fuse(cached, resolved_gamma(cached)).max(0)
 
 
 TRIO = SIGMAS[:3]
 base = hoisted(PHOTO, TRIO)
 worst_fixed = max(np.abs(hoisted(PHOTO, p) - base).max() for p in permutations(TRIO))
-shipped_base = frangi(PHOTO, sigmas=TRIO)
-worst_shipped = max(np.abs(frangi(PHOTO, sigmas=p) - shipped_base).max()
-                    for p in permutations(TRIO))
+prefix_base = frangi_prefix(PHOTO, sigmas=TRIO)
+worst_prefix = max(np.abs(frangi_prefix(PHOTO, sigmas=p) - prefix_base).max()
+                   for p in permutations(TRIO))
 print(f"worst max|difference| over all six permutations of {TRIO}")
-print(f"   shipped {worst_shipped:.4f}")
+print(f"   pre-fix {worst_prefix:.4f}")
 print(f"   hoisted {worst_fixed:.4f}")
-print(f"\nhoisted vs shipped on the ascending list:"
-      f" {np.abs(hoisted(PHOTO, SIGMAS) - frangi(PHOTO, sigmas=SIGMAS)).max():.3g}")
+print(f"\nhoisted vs pre-fix on the ascending list:"
+      f" {np.abs(hoisted(PHOTO, SIGMAS) - frangi_prefix(PHOTO, sigmas=SIGMAS)).max():.3g}")
 ```
 
-On an ascending list the hoisted version reproduces today's output exactly,
+On an ascending list the hoisted version reproduces the pre-fix output exactly,
 because §3 showed $S$ falls with σ, so the maximum over all scales is attained
 at `min(sigmas)`, which for a sorted list is also `sigmas[0]`. **That ceases to
 be true once D2 is fixed**, and §10 returns to the consequence.
 
 ## 5. D4 — γ = None is a whole-image statistic
 
-Fixing the order does not make the filter local. `s.max()` is a maximum over
-every pixel, so a single bright speck anywhere in the frame sets the contrast
-reference for the whole image. Frangi explicitly describes $c$ as depending on
-the image grey-scale range and recommends half the maximum Hessian norm. The
-global statistic is therefore part of the published heuristic; the issue here
-is that the API exposes it as `gamma=None` without documenting the non-local
-effect. `on_meijering.md` §1 uses the same two probes.
+Fixing the order (§4) does not make the filter local. In the post-fix code,
+`gamma=None` is a maximum over every scale, and in the pre-fix code it is a
+maximum over the first scale; either way it is a maximum over every pixel, so a
+single bright speck anywhere in the frame sets the contrast reference for the
+whole image. Frangi explicitly describes $c$ as depending on the image
+grey-scale range and recommends half the maximum Hessian norm. The global
+statistic is therefore part of the published heuristic; the issue here is that
+the API exposes it as `gamma=None` without documenting the non-local effect.
+`on_meijering.md` §1 uses the same two probes.
 
 ```{code-cell} ipython3
 def far_field(fn, image, spot=(0, 0), value=10.0, keep=100):
@@ -867,16 +987,18 @@ probes = {}
 for label, fn in (
         ("meijering", lambda im: meijering(im, sigmas=SIGMAS)),
         ("sato", lambda im: sato(im, sigmas=SIGMAS, mode="reflect")),
-        ("frangi, gamma=None", lambda im: frangi(im, sigmas=SIGMAS)),
-        ("frangi, gamma=15", lambda im: frangi(im, sigmas=SIGMAS, gamma=15))):
+        ("frangi post-fix, gamma=None", lambda im: frangi_postfix(im, sigmas=SIGMAS)),
+        ("frangi post-fix, gamma=15",
+         lambda im: frangi_postfix(im, sigmas=SIGMAS, gamma=15))):
     probes[label] = {"one distant pixel": far_field(fn, PHOTO),
                      "crop the surroundings": crop_change(fn, PHOTO)}
 show_table(pd.DataFrame(probes).T.map(lambda v: f"{v:.2%}"))
 ```
 
-`sato` is local under both probes, as a filter should be. `frangi` is not, and
-stops being non-local the moment γ is given explicitly — which identifies γ as
-the sole cause.
+`sato` is local under both probes, as a filter should be. The post-fix `frangi`
+is not, and stops being non-local the moment γ is given explicitly — which
+identifies γ as the sole cause. D4 is not one of the three repairs: the post-fix
+default is a maximum over every scale, which is still a whole-image statistic.
 
 Two cautions about reading that table. The margin matters: if it is smaller
 than the widest kernel support, the crop probe measures the border defect of §6
@@ -911,11 +1033,11 @@ them.
 ```{code-cell} ipython3
 def winning_sigma_map(image, sigmas, gamma, **kwargs):
     """Which sigma gives the largest vesselness at each pixel."""
-    cached = frangi_cache(image, sigmas, parts_fn=shipped_parts, **kwargs)
+    cached = frangi_cache(image, sigmas, parts_fn=prefix_parts, **kwargs)
     return np.array(sigmas)[fuse(cached, gamma).argmax(0)]
 
 
-cached_photo = frangi_cache(PHOTO, SIGMAS, parts_fn=shipped_parts)
+cached_photo = frangi_cache(PHOTO, SIGMAS, parts_fn=prefix_parts)
 maps = {f"γ from sigma={s}": np.array(SIGMAS)[fuse(cached_photo, gammas[s]).argmax(0)]
         for s in (SIGMAS[0], SIGMAS[-1])}
 maps["γ per scale"] = np.array(SIGMAS)[fuse(cached_photo, "per-scale").argmax(0)]
@@ -1027,7 +1149,7 @@ CROP = PHOTO[:128, :128]
 PAD, GAMMA_FIXED, BORDER_SIGMAS = 40, 0.05, (1, 3, 5)
 extended = np.pad(CROP, PAD, mode="symmetric")        # matches mode='reflect'
 border = {}
-for label, eig_fn in (("shipped Hessian", eigen_pair),
+for label, eig_fn in (("released Hessian", eigen_pair),
                       ("Hessian fixes A + C", repaired_eigen_pair)):
     here = vesselness(CROP, BORDER_SIGMAS, GAMMA_FIXED, eig_fn)
     there = vesselness(extended, BORDER_SIGMAS, GAMMA_FIXED, eig_fn)[PAD:-PAD, PAD:-PAD]
@@ -1048,16 +1170,16 @@ show_table(pd.DataFrame(frames).T.map(lambda v: f"{v:.2%}"))
 from matplotlib.colors import LogNorm
 
 FLOOR = 1e-7
-shipped_map = border["shipped Hessian"]["_map"]
-hot = tuple(int(v) for v in np.unravel_index(shipped_map.argmax(), shipped_map.shape))
+released_map = border["released Hessian"]["_map"]
+hot = tuple(int(v) for v in np.unravel_index(released_map.argmax(), released_map.shape))
 
 fig, axes = plt.subplots(1, 2, figsize=(10.6, 3.4),
                          gridspec_kw={"width_ratios": [1, 1.25], "wspace": 0.45})
-im = axes[0].imshow(np.maximum(shipped_map, FLOOR), cmap=SEQ,
-                    norm=LogNorm(vmin=FLOOR, vmax=shipped_map.max()))
+im = axes[0].imshow(np.maximum(released_map, FLOOR), cmap=SEQ,
+                    norm=LogNorm(vmin=FLOOR, vmax=released_map.max()))
 axes[0].plot(hot[1], hot[0], "o", mfc="none", mec=C_TWO, ms=11, mew=1.5)
-bare(axes[0], f"shipped Hessian; worst pixel row {hot[0]}, col {hot[1]}"
-              f" at {shipped_map.max():.0%}")
+bare(axes[0], f"released Hessian; worst pixel row {hot[0]}, col {hot[1]}"
+              f" at {released_map.max():.0%}")
 fig.colorbar(im, ax=axes[0], fraction=0.046, pad=0.04)
 
 for (label, v), colour in zip(border.items(), (C_ONE, C_THREE)):
@@ -1075,7 +1197,7 @@ axes[1].legend(frameon=False, fontsize=8)
 fig.suptitle("D5: the disagreement is a rim, and fixes A + C remove it", y=1.03)
 ```
 
-With the shipped Hessian the disagreement is confined to a rim: about 77% of
+With the released Hessian the disagreement is confined to a rim: about 77% of
 the output range at the outermost pixel, an order of magnitude less one pixel
 in, and below 1% by the third. With fixes A and C it is zero — not small, zero
 to floating point — at every depth, which is the result `on_hessian.md` reports
@@ -1085,21 +1207,24 @@ change.
 ## 7. D6 — `alpha` does nothing in 2-D
 
 The plate-sensitivity factor $1 - \exp(-R_a^2/2\alpha^2)$ needs three
-eigenvalues. In 2-D the code sets `r_a = np.inf`, so the factor is exactly 1 and
-`alpha` cannot affect the result. The docstring describes `alpha` without
-qualification.
+eigenvalues. In 2-D the factor does not appear: the pre-fix code sets
+`r_a = np.inf`, and the post-fix code has no 2-D plate term. Either way `alpha`
+cannot affect the result. The docstring describes `alpha` without
+qualification. D6 is present in both states, so the post-fix filter is shown.
 
 ```{code-cell} ipython3
-ref = frangi(PHOTO, sigmas=SIGMAS, alpha=0.5, gamma=GAMMA_FIXED)
+ref = frangi_postfix(PHOTO, sigmas=SIGMAS, alpha=0.5, gamma=GAMMA_FIXED)
 volume = np.stack([PHOTO[::2, ::2]] * 24, axis=0)
-ref3 = frangi(volume, sigmas=[2], alpha=0.5, gamma=GAMMA_FIXED)
+ref3 = frangi_postfix(volume, sigmas=[2], alpha=0.5, gamma=GAMMA_FIXED)
 show_table(
     pd.DataFrame(
     [{"alpha": a,
       "2-D: max |diff| vs alpha=0.5":
-          np.abs(frangi(PHOTO, sigmas=SIGMAS, alpha=a, gamma=GAMMA_FIXED) - ref).max(),
+          np.abs(frangi_postfix(PHOTO, sigmas=SIGMAS, alpha=a,
+                                gamma=GAMMA_FIXED) - ref).max(),
       "3-D: max |diff| vs alpha=0.5":
-          np.abs(frangi(volume, sigmas=[2], alpha=a, gamma=GAMMA_FIXED) - ref3).max()}
+          np.abs(frangi_postfix(volume, sigmas=[2], alpha=a,
+                                gamma=GAMMA_FIXED) - ref3).max()}
      for a in (0.1, 2.0, 5.0)]).set_index("alpha").round(6)
 )
 ```
@@ -1137,13 +1262,14 @@ def top_overlap(a, b, pct=99):
 
 summary = []
 for name, image in CORPUS.items():
-    asc, desc = frangi(image, sigmas=SIGMAS), frangi(image, sigmas=SIGMAS[::-1])
+    asc = frangi_prefix(image, sigmas=SIGMAS)
+    desc = frangi_prefix(image, sigmas=SIGMAS[::-1])
     summary.append({
         "image": name,
         "D3 mean ratio": round(desc.mean() / max(asc.mean(), 1e-12), 1),
         "D3 top 1% overlap": round(top_overlap(asc, desc), 3),
         "D4 one distant pixel":
-            f"{far_field(lambda im: frangi(im, sigmas=SIGMAS), image):.1%}",
+            f"{far_field(lambda im: frangi_prefix(im, sigmas=SIGMAS), image):.1%}",
     })
 show_table(pd.DataFrame(summary).set_index("image"))
 ```
@@ -1163,9 +1289,9 @@ for width in (1.0, 2.0, 4.0, 8.0):
     g = np.sqrt((eigen_pair(ridge, 3) ** 2).sum(0)).max() / 2
     polarity.append({
         "ridge width": width,
-        "shipped, wrong polarity": single_scale(shipped_parts, ridge, 3, g, True)[centre],
-        "sign test, wrong polarity": single_scale(fixed_parts, ridge, 3, g, True)[centre],
-        "sign test, right polarity": single_scale(fixed_parts, ridge, 3, g, False)[centre],
+        "pre-fix, wrong polarity": single_scale(prefix_parts, ridge, 3, g, True)[centre],
+        "post-fix, wrong polarity": single_scale(postfix_parts, ridge, 3, g, True)[centre],
+        "post-fix, right polarity": single_scale(postfix_parts, ridge, 3, g, False)[centre],
     })
 show_table(pd.DataFrame(polarity).set_index("ridge width").round(6))
 ```
@@ -1179,13 +1305,14 @@ in-filter defects is contradicted by at least one of them.
 | --- | --- | --- | --- |
 | **Frangi *et al.* (1998)** | explicit sign branch in Eqs. (13) and (15) | derivatives defined as $s^{\gamma_L}\,L * \partial G$ | $c$ is "half the value of the maximum Hessian norm" |
 | **ITK** `HessianToObjectnessMeasureImageFilter` | explicit `signConstraintsSatisfied` test, then zero | `SetNormalizeAcrossScale(true)` on the Hessian filter — Lindeberg γ = 1 | a **fixed user parameter**, never computed from the image; `Gamma == 0` disables the term |
-| **DIPlib** `FrangiVesselness` | — | **none in the function** — single-scale and unnormalised; the σ² is a recipe its documentation gives the *caller* (§9.1) | not image-derived |
+| **DIPlib** `FrangiVesselness` | — | a single-scale primitive that leaves eq. (2) to the caller: scale the input by σ² and its `c` is the paper's (§9.1) | not image-derived |
 | **Jerman's own MATLAB** ([source](https://github.com/timjerman/JermanEnhancementFilter)) | explicit `Lambda3 <= 0` test | `c = sigma.^2; Hxx = c*Hxx; ...` — σ² on the Hessian | `tau * max(Lambda3(:))`, per scale |
 | **skimage PR [#8074](https://github.com/scikit-image/scikit-image/pull/8074)** (`jerman`) | explicit `lambda3 <= eigval_tol` test | none — drops the reference's σ², but the response is ratio-only so this is inert | `tau * lambda3.max()`, per scale, **inside the loop** |
 | **OpenCV** `ximgproc::RidgeDetectionFilter` | — | single fixed `ksize`, no scale loop | — |
-| **skimage `frangi` today** | clipped divide, defeated when $\lambda_1 = 0$ | none | `s.max()/2` at `sigmas[0]`, frozen |
+| **skimage `frangi`, pre-fix** | clipped divide, defeated when $\lambda_1 = 0$ | none | `s.max()/2` at `sigmas[0]`, frozen |
+| **skimage `frangi`, post-fix** | explicit sign test, as ITK and Jerman | $\sigma^2$ on the Hessian norm | `gamma=None` resolved over every scale; a fixed user parameter when given |
 
-Two things are worth saying out loud about that table.
+Two things follow from that table.
 
 ITK is the cleanest contradiction of D3 and D4 together: γ is a parameter the
 caller sets, so there is no image statistic in the loop and no order to depend
@@ -1209,11 +1336,13 @@ far-field probe.
 ```{code-cell} ipython3
 # sato is the in-repo control: same module, same loop, no image statistic.
 print("max |ascending - reversed| over sigmas")
-for name, fn in (("meijering", meijering), ("sato", sato), ("frangi", frangi)):
+for name, fn in (("meijering", meijering), ("sato", sato),
+                 ("frangi pre-fix", frangi_prefix),
+                 ("frangi post-fix", frangi_postfix)):
     kw = {"mode": "reflect"} if name == "sato" else {}
     delta = np.abs(fn(PHOTO, sigmas=SIGMAS, **kw)
                    - fn(PHOTO, sigmas=SIGMAS[::-1], **kw)).max()
-    print(f"  {name:<10}{delta:.4f}")
+    print(f"  {name:<16}{delta:.4f}")
 ```
 
 ### 9.1 Measured against ITK and DIPlib
@@ -1231,11 +1360,21 @@ import diplib as dip
 import itk
 ```
 
-Both are single-scale, and neither derives `c` from the image, so the
-comparable call passes one σ and an explicit γ. Neither normalises by default,
-and `frangi_fixed` multiplies the eigenvalues by $\sigma^2$ — which cancels out
-of the blobness (a ratio) and survives only in $S$. So the matching call is
-theirs at $c/\sigma^2$ against ours at $c$.
+Both are single-scale and neither derives `c` from the image, so the
+comparable call passes one σ and an explicit γ.
+
+Equation (2) folds the scale normalisation into the *definition* of the
+derivative, so the $H$ of eq. (12) already carries $\sigma^2$, $S$ is already
+normalised, and $c$ is a threshold on that. Our `gamma` is that $c$. The
+question for each library is only where it puts eq. (2). ITK has it as a
+switch, `SetNormalizeAcrossScale`; with the switch on, its γ is ours with no
+factor anywhere. DIPlib leaves it to the caller — which is why its response
+falls monotonically with σ — so hand it the image times $\sigma^2$ and its $c$
+is ours too.
+
+Dividing $c$ by $\sigma^2$ instead would be the same arithmetic, since
+scaling the input scales $S$ and leaves the blobness ratio alone. Scaling the
+input is the better statement of it: one threshold, both sides normalised.
 
 ```{code-cell} ipython3
 ITK_OUT = itk.Image[itk.F, 2]
@@ -1277,7 +1416,7 @@ def repaired(image, sigma, gamma, power=2.0):
     `frangi_fixed` of §10.1 is this with the scale loop around it; it is not
     defined yet at this point in the notebook.
     """
-    cached = frangi_cache(image, [sigma], parts_fn=fixed_parts, power=power,
+    cached = frangi_cache(image, [sigma], parts_fn=postfix_parts, power=power,
                           black_ridges=False)
     return fuse(cached, gamma).max(0)
 ```
@@ -1292,8 +1431,8 @@ for sigma in (1.0, 2.0, 3.0, 6.0):
     ours = repaired(scene, sigma, C)
     for name, theirs in (
             ("ITK, normalised", itk_vesselness(scene, sigma, C, BETA)),
-            ("DIPlib, c / sigma**2",
-             dip_vesselness(scene, sigma, C / sigma**2, BETA))):
+            ("DIPlib, on sigma**2 * image",
+             dip_vesselness(scene * sigma**2, sigma, C, BETA))):
         gap = np.abs(ours[MARGIN] - theirs[MARGIN])
         span = max(ours[MARGIN].max(), 1e-12)
         rows.append({"sigma": sigma, "against": name,
@@ -1313,8 +1452,11 @@ where an eigenvalue sign is near-degenerate, plus each library's own Gaussian.
 
 ### 9.2 Three independent readings of the exponent
 
-The matching above assumed $\sigma^2$. That assumption is testable, and all
-three ways of asking put it at exactly 2.
+The matching above assumed the exponent is 2. That is testable, and all three
+ways of asking put it at exactly that. The scan below divides $c$ rather than
+scaling the input, because a scan wants one thing varying: dividing $c$ by
+$\sigma^p$ is the same arithmetic as scaling the input by $\sigma^p$, and
+reads better when $p$ is not 2.
 
 ```{code-cell} ipython3
 ridge_scene = np.exp(-((cols - 64) ** 2) / (2 * 4.0**2))
@@ -1381,16 +1523,16 @@ def frangi_fixed(image, sigmas, gamma=None, power=2.0, beta=0.5,
 
     power : float
         The Lindeberg exponent, 2 * gamma_L. 2.0 selects a ridge at w*sqrt(2);
-        1.5 selects it at w. 0.0 is the shipped behaviour (no selection).
+        1.5 selects it at w. 0.0 is the pre-fix behaviour (no selection).
     """
-    cached = frangi_cache(image, sigmas, parts_fn=fixed_parts, power=power,
+    cached = frangi_cache(image, sigmas, parts_fn=postfix_parts, power=power,
                           black_ridges=black_ridges, mode=mode)      # D1
     if gamma is None:
         gamma = resolved_gamma(cached)                               # D3
     return fuse(cached, gamma).max(0)
 ```
 
-- **D1** is `fixed_parts`: an explicit sign test rather than a clipped divide.
+- **D1** is `postfix_parts`: an explicit sign test rather than a clipped divide.
 - **D2** is `power`, a factor $\sigma^{2\gamma_L}$ folded into the eigenvalues.
 - **D3** is `resolved_gamma`, computed from the cache after the loop.
 - **D4** has no repair that keeps `gamma=None`; passing `gamma` explicitly is
@@ -1406,20 +1548,20 @@ def scale_won(power, gamma=0.2):
     """Which sigma wins at the centre of a width-6 ridge, at this exponent."""
     scores = {}
     for sigma in SIGMA_GRID:
-        blobness, norm = fixed_parts(-wide6, sigma, power=power)
+        blobness, norm = postfix_parts(-wide6, sigma, power=power)
         scores[sigma] = (blobness * (1 - np.exp(-norm**2 / (2 * gamma**2))))[MIDDLE]
     return max(scores, key=scores.get)
 
 
 checks = {}
 for label, fn, parts_fn, power in (
-        ("shipped", lambda im, sg: frangi(im, sigmas=sg), shipped_parts, 0.0),
+        ("pre-fix", lambda im, sg: frangi_prefix(im, sigmas=sg), prefix_parts, 0.0),
         ("D1+D3 (power=0)",
-         lambda im, sg: frangi_fixed(im, sg, power=0.0), fixed_parts, 0.0),
+         lambda im, sg: frangi_fixed(im, sg, power=0.0), postfix_parts, 0.0),
         ("all (power=2)",
-         lambda im, sg: frangi_fixed(im, sg, power=2.0), fixed_parts, 2.0),
+         lambda im, sg: frangi_fixed(im, sg, power=2.0), postfix_parts, 2.0),
         ("all (gamma=0.5)",
-         lambda im, sg: frangi_fixed(im, sg, gamma=0.5), fixed_parts, 2.0)):
+         lambda im, sg: frangi_fixed(im, sg, gamma=0.5), postfix_parts, 2.0)):
     checks[label] = {
         "D1 wrong polarity (want 0)":
             f"{single_scale(parts_fn, bright, 3, GAMMA_DEMO, True)[centre]:.4f}",
@@ -1443,7 +1585,7 @@ dominant structure lives, which need not be the finest scale.
 where_peak = []
 for name, image in CORPUS.items():
     for power in (0.0, 2.0):
-        norms = {s: fixed_parts(image, s, power=power)[1].max() for s in SIGMAS}
+        norms = {s: postfix_parts(image, s, power=power)[1].max() for s in SIGMAS}
         where_peak.append({"image": name, "power": power,
                            "sigma with the largest S": max(norms, key=norms.get)})
 show_table(
@@ -1467,7 +1609,7 @@ the same change.
 import time
 
 costs = []
-for label, fn in (("shipped", lambda: frangi(PHOTO, sigmas=SIGMAS)),
+for label, fn in (("pre-fix", lambda: frangi_prefix(PHOTO, sigmas=SIGMAS)),
                   ("D1+D3 (power=0)", lambda: frangi_fixed(PHOTO, SIGMAS, power=0.0)),
                   ("all (power=2)", lambda: frangi_fixed(PHOTO, SIGMAS, power=2.0))):
     started = time.perf_counter()
@@ -1475,8 +1617,8 @@ for label, fn in (("shipped", lambda: frangi(PHOTO, sigmas=SIGMAS)),
         out = fn()
     costs.append({"candidate": label,
                   "seconds": round((time.perf_counter() - started) / 3, 3),
-                  "max |diff| vs shipped":
-                      f"{np.abs(out - frangi(PHOTO, sigmas=SIGMAS)).max():.3g}"})
+                  "max |diff| vs pre-fix":
+                      f"{np.abs(out - frangi_prefix(PHOTO, sigmas=SIGMAS)).max():.3g}"})
 show_table(pd.DataFrame(costs).set_index("candidate"))
 ```
 
@@ -1509,7 +1651,7 @@ and precisely the one `on_meijering.md` is about. The far-field probe confirms
 it stays non-local.
 
 ```{code-cell} ipython3
-per_scale = lambda im: fuse(frangi_cache(im, SIGMAS, parts_fn=shipped_parts),
+per_scale = lambda im: fuse(frangi_cache(im, SIGMAS, parts_fn=prefix_parts),
                             "per-scale").max(0)
 print(f"γ per scale: far field {far_field(per_scale, PHOTO):.2%}")
 
@@ -1526,7 +1668,7 @@ for gamma, label in (("per-scale", "γ per scale"), (max(gammas.values()), "γ h
 ### Do not just sort `sigmas` inside the function
 
 Sorting makes the output a function of the set again, satisfying the docstring
-in one line. It also promotes today's accident — "use the smallest scale's
+in one line. It also promotes the pre-fix accident — "use the smallest scale's
 contrast reference" — into a decision, without anyone deciding it. And §10.2
 shows it stops being equivalent to the docstring's own wording as soon as D2
 lands.
@@ -1559,18 +1701,26 @@ fixes A and C remove it at source, and §6 measures them doing so.
 | defect | what breaks | evidence | repair |
 | --- | --- | --- | --- |
 | D1 | `black_ridges` is inert on an ideal ridge; wrong-polarity ridges score the filter's maximum | §2, identical arrays for both settings; §2.1 leak census over σ; §8 polarity table | explicit sign test, as ITK and Jerman do |
-| D2 | ideal ridges never select their own width under the shipped unnormalized structuredness term; non-trivial vesselness collapses to the finest σ in the tested regime | §3, analytic falloff; high-$V$ photo scan; peaks under Lindeberg powers | $\sigma^{2\gamma_L}$ on the Hessian; #7711 |
+| D2 | ideal ridges never select their own width under the pre-fix unnormalised structuredness term; non-trivial vesselness collapses to the finest σ in the tested regime | §3, analytic falloff; high-$V$ photo scan; peaks under Lindeberg powers | $\sigma^{2\gamma_L}$ on the Hessian; #7711 |
 | D3 | output depends on the order of `sigmas` | §4, three permutation classes keyed by `sigmas[0]` | resolve γ before the loop |
 | D4 | `gamma=None` makes output depend on pixels arbitrarily far away | §5, far-field probe, zero once `gamma` is explicit | document the published global-$c$ heuristic, or require a local threshold |
 | D5 | a bright rim, large relative to the output range | §6, disagreement with a once-extended reference | `on_hessian.md` fixes A and C |
 | D6 | `alpha` is documented and inert in 2-D | §7, exactly zero difference in 2-D, non-zero in 3-D | one docstring line |
 
+The repairs above are implemented in the `frangi-fixes` branch, and
+`frangi_postfix` in §1 is their transcription. The pre-fix transcription is
+`frangi_prefix`. The notebook runs against either installation and gives the
+same result, because every measurement comes from one of those two functions.
+§1's state cell reports which of the two the installed `frangi` matches.
+
 **Recommended order.** D3 first: it is one line, it is exactly
 back-compatible for sorted `sigmas`, and it is a prerequisite for D2 behaving
 sensibly. Then D1 and D6, both small and both fixing a stated contract. Then D2
-as an announced behaviour change, with the exponent chosen deliberately —
-`on_meijering.md` §5 argues the same choice for the same reason, and the two
-filters should not answer it differently. D4 is documentation. D5 belongs to
+as an announced behaviour change, with the exponent chosen deliberately.
+`on_meijering.md` §8 separates the detection map from the width map, and §9
+compares the choice with ITK and DIPlib: the detection map takes `sigma**2` in
+both filters, and `gamma = 3/4` is a width-map calibration. The two filters
+answer the same question the same way. D4 is documentation. D5 belongs to
 `hessian_matrix`.
 
 **Limits.** Three 2-D greyscale images from `skimage.data`, downsampled to
@@ -1582,6 +1732,11 @@ leak census in §2.1 covers those five σ on one photograph, so "vanishingly
 rare" is a statement about that scan and not a bound. 3-D `frangi`
 appears only in §7 — D1 and D3 apply there by inspection of the shared code
 path, but that is a reading rather than a measurement here.
+
+The notebook was executed against two installations of scikit-image: a pre-fix
+build at `aac0f792a` and the repaired `frangi-fixes` tip at `275a586a3`. Both
+runs give the same output, cell for cell, because every result comes from
+`frangi_prefix` or `frangi_postfix`.
 
 ```{code-cell} ipython3
 print(f"scikit-image {ski.__version__}")
