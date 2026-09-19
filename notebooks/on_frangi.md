@@ -1179,7 +1179,7 @@ in-filter defects is contradicted by at least one of them.
 | --- | --- | --- | --- |
 | **Frangi *et al.* (1998)** | explicit sign branch in Eqs. (13) and (15) | derivatives defined as $s^{\gamma_L}\,L * \partial G$ | $c$ is "half the value of the maximum Hessian norm" |
 | **ITK** `HessianToObjectnessMeasureImageFilter` | explicit `signConstraintsSatisfied` test, then zero | `SetNormalizeAcrossScale(true)` on the Hessian filter — Lindeberg γ = 1 | a **fixed user parameter**, never computed from the image; `Gamma == 0` disables the term |
-| **DIPlib** `FrangiVesselness` | — | documented recipe: multiply the input by σ² per scale, then take the supremum | not image-derived |
+| **DIPlib** `FrangiVesselness` | — | **none in the function** — single-scale and unnormalised; the σ² is a recipe its documentation gives the *caller* (§9.1) | not image-derived |
 | **Jerman's own MATLAB** ([source](https://github.com/timjerman/JermanEnhancementFilter)) | explicit `Lambda3 <= 0` test | `c = sigma.^2; Hxx = c*Hxx; ...` — σ² on the Hessian | `tau * max(Lambda3(:))`, per scale |
 | **skimage PR [#8074](https://github.com/scikit-image/scikit-image/pull/8074)** (`jerman`) | explicit `lambda3 <= eigval_tol` test | none — drops the reference's σ², but the response is ratio-only so this is inert | `tau * lambda3.max()`, per scale, **inside the loop** |
 | **OpenCV** `ximgproc::RidgeDetectionFilter` | — | single fixed `ksize`, no scale loop | — |
@@ -1215,6 +1215,155 @@ for name, fn in (("meijering", meijering), ("sato", sato), ("frangi", frangi)):
                    - fn(PHOTO, sigmas=SIGMAS[::-1], **kw)).max()
     print(f"  {name:<10}{delta:.4f}")
 ```
+
+### 9.1 Measured against ITK and DIPlib
+
+The table above is read from documentation and source. This section runs the
+two libraries. It needs `diplib` and `itk`, neither of which is a dependency of
+anything else here.
+
+```{code-cell} ipython3
+# `diplib` registers an IPython input hook on import, reaching for a submodule
+# that a plain `import IPython` does not load.  Importing it first is the shim.
+import IPython.terminal.pt_inputhooks  # noqa: F401
+
+import diplib as dip
+import itk
+```
+
+Both are single-scale, and neither derives `c` from the image, so the
+comparable call passes one σ and an explicit γ. Neither normalises by default,
+and `frangi_fixed` multiplies the eigenvalues by $\sigma^2$ — which cancels out
+of the blobness (a ratio) and survives only in $S$. So the matching call is
+theirs at $c/\sigma^2$ against ours at $c$.
+
+```{code-cell} ipython3
+ITK_OUT = itk.Image[itk.F, 2]
+
+
+def itk_vesselness(image, sigma, gamma, beta=0.5, normalize=True):
+    """ITK's `HessianToObjectnessMeasureImageFilter`, for a 2-D line."""
+    handle = itk.GetImageFromArray(np.ascontiguousarray(image, dtype=np.float32))
+    hessian = itk.HessianRecursiveGaussianImageFilter.New(handle)
+    hessian.SetSigma(sigma)
+    hessian.SetNormalizeAcrossScale(normalize)
+    hessian.Update()
+    # The output pixel type must be named: left to the wrapper it defaults to
+    # int16, which truncates the measure to 0 and 1.
+    measure = itk.HessianToObjectnessMeasureImageFilter[
+        type(hessian.GetOutput()), ITK_OUT
+    ].New()
+    measure.SetInput(hessian.GetOutput())
+    measure.SetAlpha(0.5)
+    measure.SetBeta(beta)
+    measure.SetGamma(gamma)
+    measure.SetObjectDimension(1)      # a line
+    measure.SetBrightObject(True)
+    measure.SetScaleObjectnessMeasure(False)   # an ITK extension, not Frangi's
+    measure.Update()
+    return itk.GetArrayFromImage(measure.GetOutput())
+
+
+def dip_vesselness(image, sigma, gamma, beta=0.5):
+    """DIPlib's `FrangiVesselness`.  Its 2-D `parameters` is [beta, c]: it has
+    no alpha, exactly as eq. (15) has no plate factor."""
+    return np.asarray(dip.FrangiVesselness(
+        image, sigmas=[sigma], parameters=[beta, gamma], polarity='white'))
+
+
+def repaired(image, sigma, gamma, power=2.0):
+    """One scale of the repaired filter, from §2.2's and §4.2's pieces.
+
+    `frangi_fixed` of §10.1 is this with the scale loop around it; it is not
+    defined yet at this point in the notebook.
+    """
+    cached = frangi_cache(image, [sigma], parts_fn=fixed_parts, power=power,
+                          black_ridges=False)
+    return fuse(cached, gamma).max(0)
+```
+
+```{code-cell} ipython3
+C, BETA = 0.05, 0.5
+MARGIN = (slice(40, -40),) * 2      # clear of each library's boundary rule
+scene = ski.util.img_as_float(ski.data.camera())[::2, ::2][:160, :160]
+
+rows = []
+for sigma in (1.0, 2.0, 3.0, 6.0):
+    ours = repaired(scene, sigma, C)
+    for name, theirs in (
+            ("ITK, normalised", itk_vesselness(scene, sigma, C, BETA)),
+            ("DIPlib, c / sigma**2",
+             dip_vesselness(scene, sigma, C / sigma**2, BETA))):
+        gap = np.abs(ours[MARGIN] - theirs[MARGIN])
+        span = max(ours[MARGIN].max(), 1e-12)
+        rows.append({"sigma": sigma, "against": name,
+                     "max difference": f"{gap.max():.1e}",
+                     "of range": f"{gap.max() / span:.1%}",
+                     "median": f"{np.median(gap):.0e}",
+                     "pixels over 1%": f"{(gap > 0.01 * span).mean():.2%}"})
+show_table(pd.DataFrame(rows), index=False)
+```
+
+The median is zero and only a fraction of a per cent of pixels move by more
+than 1%: the bulk agrees exactly, and the residue is the handful of pixels
+where an eigenvalue sign is near-degenerate, plus each library's own Gaussian.
+`frangi` is the same filter these two are.
+
++++
+
+### 9.2 Three independent readings of the exponent
+
+The matching above assumed $\sigma^2$. That assumption is testable, and all
+three ways of asking put it at exactly 2.
+
+```{code-cell} ipython3
+ridge_scene = np.exp(-((cols - 64) ** 2) / (2 * 4.0**2))
+SIGMA_ONE = 3.0
+
+scan = []
+for power in (1.5, 1.8, 2.0, 2.2, 2.5):
+    ours = repaired(ridge_scene, SIGMA_ONE, C)
+    theirs = dip_vesselness(ridge_scene, SIGMA_ONE, C / SIGMA_ONE**power, BETA)
+    gap = np.abs(ours[MARGIN] - theirs[MARGIN]).max()
+    scan.append({"DIPlib c divided by": f"sigma ** {power}",
+                 "max difference": f"{gap:.1e}",
+                 "of range": f"{gap / ours[MARGIN].max():.1%}"})
+show_table(pd.DataFrame(scan), index=False)
+```
+
+```{code-cell} ipython3
+# ITK has the normalisation as a switch, so it can be asked directly: is
+# `NormalizeAcrossScale(True)` the same as dividing `c` by sigma ** 2?
+direct = []
+for sigma in (2.0, 3.0):
+    switched = itk_vesselness(scene, sigma, C, BETA, normalize=True)
+    scaled = itk_vesselness(scene, sigma, C / sigma**2, BETA, normalize=False)
+    # and the Hessian itself, normalised over plain
+    handles = []
+    for flag in (False, True):
+        h = itk.HessianRecursiveGaussianImageFilter.New(
+            itk.GetImageFromArray(np.ascontiguousarray(scene, dtype=np.float32)))
+        h.SetSigma(sigma)
+        h.SetNormalizeAcrossScale(flag)
+        h.Update()
+        handles.append(itk.GetArrayFromImage(h.GetOutput())[..., 0])
+    live = np.abs(handles[0]) > 1e-6
+    direct.append({
+        "sigma": sigma,
+        "switch vs c / sigma**2": f"{np.abs(switched - scaled).max():.0e}",
+        "ITK normalised / plain Hessian":
+            f"{np.median(handles[1][live] / handles[0][live]):.4f}",
+        "sigma ** 2": sigma**2,
+    })
+show_table(pd.DataFrame(direct), index=False)
+```
+
+So: DIPlib's own responses pick out 2.0 with a sharp minimum; ITK's
+`NormalizeAcrossScale` switch is indistinguishable from dividing $c$ by
+$\sigma^2$; and ITK's normalised Hessian is its plain one times exactly
+$\sigma^2$. The exponent in §10's repair is not a preference.
+
++++
 
 ## 10. Ways forward
 
