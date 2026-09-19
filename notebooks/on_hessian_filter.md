@@ -13,62 +13,46 @@ kernelspec:
 
 # On the `hessian` filter
 
-`skimage.filters.hessian` is documented as the "Hybrid Hessian filter" (HHF)
-and cites [Ng, Yap, Costen and Li
-(2014)](https://doi.org/10.1007/978-3-319-16811-1_40), a wrinkle detector. Its
-whole body is three statements:
+`skimage.filters.hessian` calls `frangi`, then sets every non-positive pixel to
+1. The docstring calls the result a filtered image and cites the Hybrid Hessian
+Filter of [Ng, Yap, Costen and Li
+(2014)](https://doi.org/10.1007/978-3-319-16811-1_40).
 
-```python
-filtered = frangi(image, sigmas=sigmas, alpha=alpha, beta=beta, gamma=gamma, ...)
-filtered[filtered <= 0] = 1
-return filtered
-```
-
-with `gamma=15` in the signature. That second line looks like a bug: it takes
-every pixel the filter rejected and gives it the largest value in range — a
-value that turns out to sit *above* the best score the filter can award a real
-ridge.
-
-It is not invented. The paper is in `library/ng2014hybrid_hessian.pdf`, and
-that line is the surviving half of its eq. (16). The defect is subtler and
-worse than an invented clamp: `hessian` implements the middle of a five-step
-pipeline, keeps a fragment of the step that ends it, and drops the two steps
-that make the fragment mean anything. What comes back is neither the paper's
-output nor a vesselness.
-
-This notebook reads the pipeline out of the paper, marks off what `skimage`
-implements, and measures what the difference does. `on_frangi.md` covers the
-filter this one delegates to; nothing here depends on that notebook's repairs.
+Two questions follow. Does the returned array rank ridges above non-ridges?
+Is it the cited algorithm? The answer to both is no.
 
 ```{code-cell} ipython3
 import pathlib
 
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
 import scipy.ndimage as ndi
+import sympy as sp
 
 from nbhelper import show_table
 ```
 
 ```{code-cell} ipython3
+# The subject under test, and its three neighbours in the same module.
 import skimage as ski
 from skimage.filters import frangi, hessian, meijering, sato
-from skimage.morphology import remove_small_objects  # max_size=N drops <=N
+from skimage.morphology import remove_small_objects
 ```
 
 ```{code-cell} ipython3
-# Slots 1 to 3 of the reference categorical palette, validated all-pairs;
-# same palette as `on_frangi.md` and `on_meijering.md`.
-C_ONE, C_TWO, C_THREE = "#2a78d6", "#eb6834", "#1baf7a"
-INK, MUTED, RULE = "#0b0b0b", "#52514e", "#dedcd5"
+import matplotlib.pyplot as plt
 
+# Every figure here shows pixels in greyscale. The only colours are furniture.
+INK, MUTED, RULE = "#0b0b0b", "#52514e", "#dedcd5"
 plt.rcParams.update(
     {"figure.dpi": 110, "font.size": 9, "axes.titlesize": 9,
      "axes.titlecolor": MUTED, "figure.facecolor": "white"}
 )
+```
 
+## Helpers
 
+```{code-cell} ipython3
 def bare(ax, title=None):
     """Strip an image axes down to the pixels."""
     ax.set_xticks([]); ax.set_yticks([])
@@ -79,27 +63,43 @@ def bare(ax, title=None):
     return ax
 
 
-def recede(ax, title=None):
-    """Push a plot axes' furniture into the background."""
-    ax.tick_params(labelsize=8, colors=MUTED)
-    for spine in ("top", "right"):
-        ax.spines[spine].set_visible(False)
-    for spine in ("left", "bottom"):
-        ax.spines[spine].set_color(RULE)
-    if title:
-        ax.set_title(title)
-    return ax
+def paper_eq16(score):
+    """Eq. (16) of the paper: 0 where the score is positive, 1 elsewhere."""
+    return (score <= 0).astype(float)
 
 
-# `camera()` is uint8. The ridge filters cast rather than rescale (`astype`,
-# not `img_as_float`), so 0-255 reaches the filter intact -- see section 4.
+def skimage_clamp(score):
+    """What `hessian` adds to `frangi`: the `otherwise 1` branch, alone."""
+    out = score.copy()
+    out[out <= 0] = 1
+    return out
+
+
+def jaccard(a, b):
+    """The Jaccard similarity index of two boolean masks, the paper's JSI."""
+    a, b = np.asarray(a, bool), np.asarray(b, bool)
+    return (a & b).sum() / max((a | b).sum(), 1)
+
+
+def standardise(a):
+    return (a - a.mean()) / a.std()
+
+
+def agreement(a, b):
+    """Correlation of two images, after removing mean and scale."""
+    return np.corrcoef(standardise(a).ravel(), standardise(b).ravel())[0, 1]
+```
+
+```{code-cell} ipython3
+# `camera()` is uint8. The ridge filters cast rather than rescale, so 0-255
+# reaches the filter intact. Section 4 measures what that implies.
 CAMERA = ski.data.camera()
 PHOTO = CAMERA[::2, ::2]                       # decimated, for speed
 PHOTO_FLOAT = ski.util.img_as_float(PHOTO)     # the same picture in [0, 1]
-RIDGE_SIGMAS = (1, 3, 5, 7, 9)
+SIGMAS = (1, 3, 5, 7, 9)                       # the `hessian` default
 
 
-def dark_ridge(shape=(128, 128), width=4, blur=1.0):
+def dark_bar(shape=(128, 128), width=4, blur=1.0):
     """One dark vertical bar on a flat white field, in 0-255."""
     image = np.ones(shape)
     centre = shape[1] // 2
@@ -107,15 +107,15 @@ def dark_ridge(shape=(128, 128), width=4, blur=1.0):
     return ndi.gaussian_filter(image, blur) * 255
 
 
-RIDGE = dark_ridge()
-BACKGROUND = (slice(5, 20), slice(5, 20))      # a corner, genuinely flat
+BAR = dark_bar()
+FIELD = (slice(5, 20), slice(5, 20))           # a corner, with no structure
 SPINE = (slice(20, 108), 63)                   # down the middle of the bar
 ```
 
 ## 1. The problem
 
-`hessian` and `sato` are neighbours in `skimage.filters`, documented alike and
-listed in each other's "See also". Run both on `camera()` with their defaults.
+`hessian` and `sato` sit in the same module. Both documents say they detect
+continuous ridges. Run both on `camera()` with their defaults.
 
 ```{code-cell} ipython3
 their_sato = sato(CAMERA)
@@ -132,16 +132,14 @@ axes[2].imshow(their_hessian, cmap="gray", vmin=0, vmax=1)
 fig.tight_layout()
 ```
 
-`sato` returns a ridge map. `hessian` returns the ridge map with a white crust
-laid over the grass, the sky and the coat — and the crust is not noise. It is
-the filter's *maximum* value, written into the pixels it was most confident
-were not ridges.
+`sato` gives a ridge map. `hessian` gives a ridge map with a white crust over
+the grass, the sky and the coat. The crust is the filter's largest value.
 
 ```{code-cell} ipython3
 show_table(pd.DataFrame([
-    {"quantity": "the filter's maximum value",
+    {"quantity": "the filter's largest value",
      "sato": f"{their_sato.max():.4f}", "hessian": f"{their_hessian.max():.4f}"},
-    {"quantity": "share of the image pinned at exactly that value",
+    {"quantity": "share of the 512x512 image at that value",
      "sato": f"{(their_sato == their_sato.max()).mean():.2%}",
      "hessian": f"{(their_hessian == 1).mean():.2%}"},
     {"quantity": "largest value below it",
@@ -150,135 +148,109 @@ show_table(pd.DataFrame([
 ]), index="quantity")
 ```
 
-The last two rows are the whole notebook in one place. Nearly a fifth of the
-image is pinned at the maximum, and the strongest genuine ridge response
-anywhere in the picture is **0.999790** — just below it. The sentinel that means "not a
-ridge" outranks the best evidence of a ridge the filter can produce, so there
-is no threshold that separates them and no sense in which the array can be read
-as a filtered image.
+17.88% of the 262144 pixels read exactly 1.0. The largest value below 1.0 is
+0.999790. Section 3 shows that the pixels at 1.0 are the ones the filter
+rejected, and that 0.999790 is a genuine ridge score.
 
-Nothing here is a tuning problem. These are the documented defaults, on the
-library's own sample image, in the dtype it ships in.
+These are the documented defaults, on the library's own sample image, in the
+dtype it ships in.
 
 +++
 
-## 2. What the paper specifies
+## 2. What the code computes
 
-The paper builds a wrinkle detector in five steps. Numbered as it numbers them:
+The body of `hessian` is three statements.
 
-1. **Directional gradient** (eq. 1). The forehead image `I` is reduced to one
-   partial derivative, and *that* becomes the image the rest of the pipeline
-   sees: "Let ∂I/∂y denoted as 𝓘, the Hessian matrix 𝓗 of 𝓘 at scale σ".
-   ∂I/∂y "emphasizes the horizontal line", which is what forehead wrinkles are.
-2. **Hessian and eigenvalues** of 𝓘 at each scale (eqs. 2 to 11).
-3. **Frangi's vesselness** (eqs. 12 to 15): 𝓡 = (λ₁/λ₂)², 𝓢 = λ₁² + λ₂², the
-   two-term exponential of eq. (14) with the zero branch on the sign of λ₂, and
-   the maximum over σ ∈ {1, 3, 5, 7} of eq. (15). β₁ = 0.5, β₂ = 15.
-4. **Binarise** (eq. 16): $\mathcal{L}(x,y) = 0$ where $\mathcal{L}(x,y) > 0$,
-   and $1$ otherwise.
-5. **Area threshold**: "each region of interest (8-connected pixels) is
-   filtered by an area threshold where regions less than 250 pixels are
-   removed", giving the estimated wrinkle mask.
-
-Steps 4 and 5 are a pair. Eq. (16) does not score anything — it produces a
-binary candidate mask, and the caption of Fig. 2(e) says which pixels it keeps:
-"Image vectors less than zero was preserved as ridge-like pattern." Step 5 then
-throws away every connected component too small to be a wrinkle. The paper's
-output is a mask, and it is only meaningful after both.
-
-`skimage.filters.hessian` implements step 3, on the wrong input, and the
-`otherwise 1` half of step 4.
-
-```{code-cell} ipython3
-show_table(pd.DataFrame([
-    {"step": "1. directional gradient, eq. (1)", "in `skimage.filters.hessian`": "absent"},
-    {"step": "2. Hessian of that image", "in `skimage.filters.hessian`": "present, but of the raw image"},
-    {"step": "3. vesselness, eqs. (12)-(15)", "in `skimage.filters.hessian`": "present, via `frangi`"},
-    {"step": "4. binarise, eq. (16)", "in `skimage.filters.hessian`": "half — the `1` branch only"},
-    {"step": "5. area threshold, 250 px", "in `skimage.filters.hessian`": "absent"},
-]), index="step")
+```python
+filtered = frangi(image, sigmas=sigmas, alpha=alpha, beta=beta, gamma=gamma, ...)
+filtered[filtered <= 0] = 1
+return filtered
 ```
 
-The paper's constants, by contrast, came across intact, which is what shows the
-port was made from this paper and not from somewhere else: `beta=0.5` is its
-β₁, `gamma=15` is its β₂, and `sigmas=range(1, 10, 2)` is its {1, 3, 5, 7} with
-a 9 added.
+The second statement is not an invention. It is half of eq. (16) of the paper.
+
+The paper builds a wrinkle detector in five steps.
+
+1. **Directional gradient**, eq. (1). The forehead image $I$ gives one partial
+   derivative. That derivative, not $I$, is the image the rest of the pipeline
+   reads. The paper writes: "Let $\partial I/\partial y$ denoted as
+   $\mathcal{I}$, the Hessian matrix $\mathcal{H}$ of $\mathcal{I}$ at scale
+   $\sigma$ is defined as Eq. (2)."
+2. **Hessian and eigenvalues** of $\mathcal{I}$ at each scale, eqs. (2) to (11).
+3. **Vesselness**, eqs. (12) to (15):
+   $\mathcal{R} = (\lambda_1/\lambda_2)^2$,
+   $\mathcal{S} = \lambda_1^2 + \lambda_2^2$, the two-term exponential of
+   eq. (14) with a zero branch on the sign of $\lambda_2$, and the maximum over
+   $\sigma \in \{1, 3, 5, 7\}$ of eq. (15). $\beta_1 = 0.5$, $\beta_2 = 15$.
+4. **Binarise**, eq. (16): $\mathcal{L} = 0$ where $\mathcal{L} > 0$, and $1$
+   otherwise.
+5. **Area threshold**: remove every 8-connected region below 250 pixels.
+
+Steps 4 and 5 work as a pair. Eq. (16) scores nothing. It makes a binary
+candidate mask. Step 5 then drops every component too small to be a wrinkle.
+The paper's output is a mask.
+
+`skimage.filters.hessian` implements step 3, on the wrong input, and the
+`otherwise 1` branch of step 4.
+
+```{code-cell} ipython3
+show_table(pd.DataFrame([
+    {"step in the paper": "1. directional gradient, eq. (1)",
+     "in `skimage.filters.hessian`": "absent"},
+    {"step in the paper": "2. Hessian and eigenvalues",
+     "in `skimage.filters.hessian`": "present, but of the raw image"},
+    {"step in the paper": "3. vesselness, eqs. (12)-(15)",
+     "in `skimage.filters.hessian`": "present, through `frangi`"},
+    {"step in the paper": "4. binarise, eq. (16)",
+     "in `skimage.filters.hessian`": "half: the `1` branch only"},
+    {"step in the paper": "5. area threshold, 250 px",
+     "in `skimage.filters.hessian`": "absent"},
+]), index="step in the paper")
+```
+
+The paper's constants came across intact. `beta=0.5` is its $\beta_1$.
+`gamma=15` is its $\beta_2$. `sigmas=range(1, 10, 2)` is its
+$\{1, 3, 5, 7\}$ with a 9 added.
 
 +++
 
-## 3. D1 — half of eq. (16)
+## 3. D1 — eq. (16) is implemented by half
 
-Eq. (16) maps a vesselness to `{0, 1}`. `skimage` writes the `1` and omits the
-`0`, so the positive vesselness values survive into the output alongside it.
+Eq. (16) maps a score to $\{0, 1\}$. `skimage` writes the 1 and omits the 0.
+The positive scores stay in the output, beside the 1s.
 
 ```{code-cell} ipython3
-def paper_eq16(vesselness):
-    """The paper's eq. (16): 0 where the vesselness is positive, 1 elsewhere."""
-    return (vesselness <= 0).astype(float)
+score = frangi(PHOTO, sigmas=SIGMAS, gamma=15, mode="reflect")
+mask, clamped = paper_eq16(score), skimage_clamp(score)
 
-
-def skimage_clamp(vesselness):
-    """What `hessian` does: the `otherwise 1` branch, and nothing else."""
-    out = vesselness.copy()
-    out[out <= 0] = 1
-    return out
-
-
-vesselness = frangi(PHOTO, sigmas=RIDGE_SIGMAS, gamma=15, mode="reflect")
 show_table(pd.DataFrame([
-    {"output": "the paper, eq. (16)", "distinct values":
-        f"{len(np.unique(paper_eq16(vesselness)))}", "share equal to 1":
-        f"{(paper_eq16(vesselness) == 1).mean():.2%}"},
-    {"output": "`skimage.filters.hessian`", "distinct values":
-        f"{len(np.unique(skimage_clamp(vesselness))):,}", "share equal to 1":
-        f"{(skimage_clamp(vesselness) == 1).mean():.2%}"},
+    {"output": "the paper, eq. (16)",
+     "distinct values": f"{len(np.unique(mask))}",
+     "share equal to 1": f"{(mask == 1).mean():.2%}"},
+    {"output": "`skimage.filters.hessian`",
+     "distinct values": f"{len(np.unique(clamped)):,}",
+     "share equal to 1": f"{(clamped == 1).mean():.2%}"},
 ]), index="output")
 ```
 
-The two agree on exactly which pixels become 1 — `skimage` reproduces the
-paper's mask faithfully — and disagree everywhere else, where `skimage` leaves
-the vesselness in place.
+Both put 1 in the same pixels. They differ everywhere else.
 
 ```{code-cell} ipython3
-mask, clamped = paper_eq16(vesselness), skimage_clamp(vesselness)
 print("the 1-pixels are the same set:", np.array_equal(mask == 1, clamped == 1))
-print("elsewhere `skimage` keeps the vesselness:",
-      np.array_equal(clamped[mask == 0], vesselness[mask == 0]))
+print("elsewhere `skimage` keeps the score:",
+      np.array_equal(clamped[mask == 0], score[mask == 0]))
 ```
 
-That makes the returned array two incompatible things at once. Where a pixel
-reads 1 it means *the sign test rejected this pixel*; where it reads anything
-else it means *this is how ridge-like the pixel is*. The docstring promises
-"Filtered image (maximum of pixels across all scales)", which describes neither
-half.
-
-The two senses would still be separable if the sentinel sat clear of the
-scores. §1 measured that it does not:
-
-```{code-cell} ipython3
-show_table(pd.DataFrame([
-    {"in the returned array": "the sentinel, meaning *rejected*", "value": "1.0"},
-    {"in the returned array": "the best genuine ridge score",
-     "value": f"{clamped[clamped < 1].max():.6f}"},
-    {"in the returned array": "the gap between them",
-     "value": f"{1 - clamped[clamped < 1].max():.2e}"},
-]), index="in the returned array")
-```
-
-The paper's eq. (16) has no such problem, because it maps the scores to 0 and
-keeps only the sentinel — one scale, two values. `skimage` keeps both scales,
-and they overlap.
-
-Those 1-pixels are the polarity branch firing, not an underflow. Reconstructing
-the branch from the eigenvalues directly — the pixels where the second
-eigenvalue fails the sign test at *every* scale — reproduces the set exactly.
+The 1-pixels are the zero branch of eq. (14). Rebuild that branch from the
+eigenvalues. A pixel enters it when $\lambda_2$ fails the sign test at every
+scale.
 
 ```{code-cell} ipython3
 from skimage.feature import hessian_matrix, hessian_matrix_eigvals
 
 
 def sign_accepted(image, sigma):
-    """Pixels the polarity branch keeps at one scale: lambda_2 > 0."""
+    """Pixels that pass the sign test at one scale: lambda_2 > 0."""
     elements = hessian_matrix(image, sigma, mode="reflect",
                               use_gaussian_derivatives=True)
     eigvals = hessian_matrix_eigvals(elements)
@@ -287,74 +259,154 @@ def sign_accepted(image, sigma):
 
 
 accepted = np.logical_or.reduce(
-    [sign_accepted(PHOTO.astype(float), s) for s in RIDGE_SIGMAS])
-print("rejected at every scale == the mask:", np.array_equal(~accepted, mask == 1))
+    [sign_accepted(PHOTO.astype(float), s) for s in SIGMAS])
+print("rejected at every scale == the 1-pixels:",
+      np.array_equal(~accepted, mask == 1))
 ```
 
+One array now holds two meanings. A pixel at 1 means *the sign test rejected
+this pixel*. Any other value means *this is how ridge-like the pixel is*. The
+docstring promises "Filtered image (maximum of pixels across all scales)",
+which describes neither meaning.
+
 ```{code-cell} ipython3
-fig, axes = plt.subplots(1, 3, figsize=(9.6, 3.3))
+fig, axes = plt.subplots(1, 3, figsize=(10.0, 3.3))
 bare(axes[0], "the picture")
 axes[0].imshow(PHOTO, cmap="gray")
-bare(axes[1], "the paper's eq. (16) mask")
+bare(axes[1], "eq. (16): white means rejected")
 axes[1].imshow(mask, cmap="gray", vmin=0, vmax=1)
-bare(axes[2], "`hessian()`: the mask plus the scores")
+bare(axes[2], "`hessian()`: white means either")
 axes[2].imshow(clamped, cmap="gray", vmin=0, vmax=1)
-fig.suptitle("in the right panel, white means either \u201crejected\u201d or"
-             " \u201cstrong ridge\u201d", y=1.04)
 fig.tight_layout()
 ```
 
-Panel 2 is what the paper computes at this point: a candidate mask on its way
-to an area threshold, where white means *rejected* and nothing else. Panel 3 is
-what `skimage` returns — the same white pixels, with the picture's ridge
-response superimposed at the same brightness. The camera, the tripod and the
-man's outline are bright there because they are ridges; the grass and sky are
-bright because they were thrown away. Both readings render identically, and
-the table above says why: the sentinel is 1.0 and the best score is 0.999795.
+Panel 2 holds one meaning. White marks the pixels eq. (16) rejects. Panel 3
+holds both. The camera, the tripod and the man's outline are bright there
+because they are ridges. The grass and the sky are bright because the filter
+threw them away.
+
+### 3.1 The sentinel is above every score that the filter can give
+
+Call the 1 written by the clamp the **sentinel**. The two meanings stay
+separable while the sentinel is above or below every score. It is above. That
+is a property of eq. (14), not of this image.
+
+Eq. (14) multiplies a blobness factor by a structuredness factor:
+
+$$
+V = \exp\left(-\frac{\mathcal{R}}{2\beta_1^2}\right)
+    \left(1 - \exp\left(-\frac{\mathcal{S}}{2\beta_2^2}\right)\right)
+$$
+
+```{code-cell} ipython3
+S, c, R, beta = sp.symbols("S c R beta", positive=True)
+blobness = sp.exp(-R / (2 * beta**2))
+structuredness = 1 - sp.exp(-S / (2 * c**2))
+V = blobness * structuredness
+
+print("blobness <= 1      :", sp.simplify(blobness <= 1))
+print("structuredness < 1 :", sp.simplify(structuredness < 1))
+print("1 - V at R = 0     :", sp.simplify(1 - V.subs(R, 0)))
+print("sup of V over S    :", sp.limit(V.subs(R, 0), S, sp.oo))
+```
+
+The structuredness factor stays below 1 for every finite $\mathcal{S}$. The
+blobness factor stays at or below 1. So $V < 1$ always. The supremum of $V$ is
+1, and $V$ never reaches it. The clamp writes exactly 1.
+
+The sentinel is therefore above every score the filter can produce, for every
+image and every parameter value.
+
+That holds in exact arithmetic. In `float64` the gap $1 - V$ can fall below
+$2^{-53}$ and round to zero, which makes a genuine score equal to the sentinel
+bit for bit. Section 11 measures a case. Either way no threshold separates the
+two meanings, and every threshold that keeps the strongest scores keeps all of
+the rejected pixels first.
 
 ```{code-cell} ipython3
 bright = clamped > 0.99
 show_table(pd.DataFrame([
-    {"pixels brighter than 0.99": "total", "share of the image": f"{bright.mean():.2%}"},
-    {"pixels brighter than 0.99": "... that are the sentinel (rejected)",
-     "share of the image": f"{(bright & (mask == 1)).mean():.2%}"},
-    {"pixels brighter than 0.99": "... that are genuine ridge scores",
-     "share of the image": f"{(bright & (mask == 0)).mean():.2%}"},
-]), index="pixels brighter than 0.99")
+    {"pixels above 0.99": "every one of them",
+     "share of the 256x256 image": f"{bright.mean():.2%}"},
+    {"pixels above 0.99": "those at the sentinel, meaning rejected",
+     "share of the 256x256 image": f"{(bright & (mask == 1)).mean():.2%}"},
+    {"pixels above 0.99": "those that are genuine ridge scores",
+     "share of the 256x256 image": f"{(bright & (mask == 0)).mean():.2%}"},
+]), index="pixels above 0.99")
 ```
 
-A threshold at 0.99 — the natural way to ask this array for its strongest
-ridges — returns a set that is 97% rejected pixels. Lowering the threshold
-admits more genuine ridges, but it cannot exclude any of the rejected ones:
-they sit at the very top of the range, so *every* threshold contains all
-18.38% of them.
+### 3.2 How often, and how big
+
+The proof covers every image. The corpus below tests 15 sample images from
+`skimage.data`, decimated by 2, colour images converted to grey, each filtered
+with the `hessian` defaults.
+
+```{code-cell} ipython3
+CORPUS = ["camera", "coins", "moon", "text", "page", "brick", "grass",
+          "gravel", "cell", "human_mitosis", "microaneurysms", "retina",
+          "coffee", "astronaut", "horse"]
+
+
+def as_grey_ubyte(image):
+    """One 2-D uint8 image, whatever `skimage.data` returned."""
+    if image.ndim == 3:
+        image = ski.color.rgb2gray(image)
+    return ski.util.img_as_ubyte(image)
+
+
+rows = []
+for name in CORPUS:
+    image = as_grey_ubyte(getattr(ski.data, name)())[::2, ::2]
+    out = hessian(image, mode="reflect")
+    rows.append({"image": name,
+                 "sentinel share": (out == 1).mean(),
+                 "best score": out[out < 1].max()})
+corpus = pd.DataFrame(rows).set_index("image")
+
+# `gap` carries the claim: the best genuine score is below the sentinel by it.
+# Shown instead of the score itself, which rounds to 1.000000 for `horse`.
+show_table(pd.DataFrame({
+    "share at the sentinel": corpus["sentinel share"].map("{:.2%}".format),
+    "gap below the sentinel": 1 - corpus["best score"],
+}), index=True, floatfmt=".2e")
+```
+
+```{code-cell} ipython3
+# Compared on the raw floats: formatting to 6 dp rounds `horse` up to 1.000000.
+below = corpus["best score"] < 1.0
+print(f"images where the sentinel is above every genuine score: "
+      f"{below.sum()} of {len(corpus)}")
+print(f"smallest gap to the sentinel: {(1 - corpus['best score']).min():.1e} "
+      f"({(1 - corpus['best score']).idxmin()})")
+print(f"share at the sentinel ranges {corpus['sentinel share'].min():.2%} "
+      f"to {corpus['sentinel share'].max():.2%}")
+```
+
+The rank order is wrong on all 15 images. The gap shrinks to 3.6e-08.
 
 +++
 
-## 4. D2 — `gamma=15` makes the answer depend on the input dtype
+## 4. D2 — `gamma` is absolute, so the answer follows the dtype
 
-`gamma` is Frangi's `c`, the reference level for the Hessian norm `S`, and the
-only quantity in the filter carrying absolute units — see `on_frangi.md` §1.
-The paper is explicit about both the value and its dependence on range:
+`gamma` is Frangi's $c$, written $\beta_2$ in the paper. It sets the reference
+level for the Hessian norm $\mathcal{S}$. It is the only quantity in the filter
+with absolute units. The paper states both the value and its dependence on
+range:
 
-> "β₂ depends on the greyscale range of the ridge of interest and controls the
-> sensitivity of the filter to the measure 𝓢 and the default value is 15."
+> "$\beta_2$ depends on the greyscale range of the ridge of interest and
+> controls the sensitivity of the filter to the measure $\mathcal{S}$ and the
+> default value is 15."
 
-So 15 is the paper's β₂, chosen for the 8-bit skin images it works on. And the
-ridge filters do not rescale their input — `ridges.py` casts with `astype`, not
-`img_as_float` — so a `uint8` image arrives as 0-255 and 15 is the right
-constant for it. Everything in §1 was measured that way.
+The ridge filters do not rescale their input. `ridges.py` casts with `astype`,
+not `img_as_float`. A `uint8` image arrives as 0-255, and 15 is the right
+constant for it. Section 1 measured that case.
 
-The problem is the same picture in floating point. `img_as_float` is a
-conversion `skimage` invites users to apply anywhere, and it is the identity on
-input that is already float, so both of these are ordinary things to pass:
+`img_as_float` is the identity on input that is already float. Both of the
+images below are ordinary things to pass.
 
 ```{code-cell} ipython3
-from skimage.feature import hessian_matrix
-
-
 def hessian_norm(image, sigma):
-    """`S` of eq. (13): the Frobenius norm of the Hessian."""
+    """The Frobenius norm of the Hessian: eq. (13) before the square."""
     elements = hessian_matrix(image, sigma, mode="reflect",
                               use_gaussian_derivatives=True)
     doubled = [e**2 if k in (0, len(elements) - 1) else 2 * e**2
@@ -366,16 +418,15 @@ show_table(pd.DataFrame(
     [{"the image the filter sees": label,
       "largest S": f"{hessian_norm(-image, 3.0).max():.4g}",
       "structuredness at gamma = 15":
-          f"{1 - np.exp(-hessian_norm(-image, 3.0).max() ** 2 / (2 * 15.0**2)):.3e}"}
+          f"{1 - np.exp(-hessian_norm(-image, 3.0).max()**2 / (2 * 15.0**2)):.3e}"}
      for label, image in (("camera(), uint8 0-255", PHOTO.astype(float)),
                           ("img_as_float(camera()), [0, 1]", PHOTO_FLOAT))]),
     index="the image the filter sees")
 ```
 
-The gate is open at the range the constant was chosen for, and shut five orders
-down at the other. So `hessian` answers differently depending on the dtype it
-is handed — and not merely by a scale factor, but by changing which pixels
-outrank which:
+The gate is open at the range the constant was chosen for. It is shut five
+orders down at the other range. `hessian` gives a different answer for each
+dtype, and the difference changes the rank order.
 
 ```{code-cell} ipython3
 show_table(pd.DataFrame(
@@ -386,160 +437,128 @@ show_table(pd.DataFrame(
           f"{np.corrcoef(f(PHOTO).ravel(), f(PHOTO_FLOAT).ravel())[0, 1]:+.3f}"}
      for name, f in (("frangi", frangi), ("meijering", meijering),
                      ("sato", sato), ("hessian", hessian))]),
-    index="filter")   # on the decimated copy, for speed
+    index="filter")
 ```
 
-`frangi` and `meijering` are identical either way. `sato` rescales with its
-input but preserves the ranking, so it correlates at 1. `hessian` is the only
-one of the four that returns a *different answer* for the same picture, and the
-cure is visible in the sibling function: `frangi` defaults `gamma=None` and
-derives the constant from the image, which is range-independent by
-construction. `hessian` hard-codes the literal instead.
+`frangi` and `meijering` give the same answer for both dtypes. `sato` rescales
+with its input and keeps the rank order, so it correlates at 1. `hessian` is
+the only one of the four that changes the rank order.
+
+`frangi` avoids this with `gamma=None`, which takes the constant from the
+image. `hessian` hard-codes the literal.
 
 ```{code-cell} ipython3
 rows = []
 for g in (15, 15 / 255, None):
-    out = hessian(PHOTO_FLOAT, sigmas=RIDGE_SIGMAS, gamma=g, mode="reflect")
+    out = hessian(PHOTO_FLOAT, sigmas=SIGMAS, gamma=g, mode="reflect")
     rows.append({"gamma, on the float image": str(g),
-                 "largest value that is not the sentinel": f"{out[out < 1].max():.3e}",
-                 "share set to the sentinel": f"{(out == 1).mean():.2%}"})
-show_table(pd.DataFrame(rows), index="gamma, on the float image", floatfmt=".3e")
+                 "largest value below the sentinel": f"{out[out < 1].max():.3e}",
+                 "share at the sentinel": f"{(out == 1).mean():.2%}"})
+show_table(pd.DataFrame(rows), index="gamma, on the float image",
+           floatfmt=".3e")
 ```
 
-Dividing `gamma` by 255 restores the float image to the behaviour of the
-`uint8` one, which confirms the diagnosis. Note also that the sentinel's share
-does not move at any `gamma`: §3 showed it is fixed by the eigenvalue signs.
-D1 and D2 are independent, and D1 is the one that does not depend on dtype.
+Dividing `gamma` by 255 returns the float image to the behaviour of the `uint8`
+one. The share at the sentinel does not move at any `gamma`: section 3 showed
+that the eigenvalue signs fix it. D1 and D2 are independent. D1 does not depend
+on the dtype.
 
 +++
 
-## 5. D3 — the step the filter is named for is missing
+## 5. D3 — the directional gradient is missing
 
-The filter is *hybrid* because it combines a **directional gradient** with the
-Hessian. Eq. (1) of the paper takes the gradient of `I`, and the sentence after
-it fixes what the Hessian is then taken of:
+The filter is *hybrid* because it joins a directional gradient to the Hessian.
+Eq. (1) takes the gradient of $I$. Every equation from (2) onward is written in
+$\mathcal{I} = \partial I/\partial y$, not in $I$. The caption of the paper's
+Fig. 2(c) says a Gaussian filter derives that gradient.
 
-> "∂I/∂x and ∂I/∂y are the directional gradient as shown in Fig. 2(c). ∂I/∂y
-> emphasizes the horizontal line. Let ∂I/∂y denoted as 𝓘, the Hessian matrix 𝓗
-> of 𝓘 at scale σ is defined as Eq. (2)."
-
-Every later equation is written in 𝓘, not `I`. The Hessian is taken of a
-first-derivative image. `skimage.filters.hessian` passes the image straight to
-`frangi`.
-
-This also explains the docstring's otherwise puzzling "uses alternative method
-of smoothing", which corresponds to nothing in the code. It is the paper's own
-account of why HHF beat plain Frangi in their experiment: "in HHF the
-directional gradient has greatly smoothed the image and preserved the data of
-interest". The docstring describes the step the implementation left out.
+`skimage.filters.hessian` passes the image straight to `frangi`.
 
 ```{code-cell} ipython3
-# `PHOTO` is uint8; cast first or the derivative's negative lobe is clipped.
-gradient_y = ndi.gaussian_filter(PHOTO.astype(float), 1, order=(1, 0))  # eq. (1)
+gradient_y = ndi.gaussian_filter(PHOTO.astype(float), 1, order=(1, 0))
 
-comparison = {
-    "frangi on the image (what `hessian` does)":
-        frangi(PHOTO, sigmas=RIDGE_SIGMAS, mode="reflect"),
-    "frangi on d/dy (the paper's HHF input)":
-        frangi(gradient_y, sigmas=RIDGE_SIGMAS, mode="reflect"),
-}
-show_table(pd.DataFrame(
-    [{"input": name, "max": f"{out.max():.4f}", "mean": f"{out.mean():.4f}"}
-     for name, out in comparison.items()]), index="input")
-print("correlation between the two: "
-      f"{np.corrcoef(*[o.ravel() for o in comparison.values()])[0, 1]:+.3f}")
+on_image = frangi(PHOTO, sigmas=SIGMAS, mode="reflect")
+on_gradient = frangi(gradient_y, sigmas=SIGMAS, mode="reflect")
+print(f"correlation of the two responses: "
+      f"{np.corrcoef(on_image.ravel(), on_gradient.ravel())[0, 1]:+.3f}")
 ```
 
 ```{code-cell} ipython3
 fig, axes = plt.subplots(1, 3, figsize=(9.6, 3.3))
-bare(axes[0], "d/dy of the picture")
 limit = np.abs(gradient_y).max()
+bare(axes[0], "d/dy of the picture")
 axes[0].imshow(gradient_y, cmap="gray", vmin=-limit, vmax=limit)
-for ax, (name, out) in zip(axes[1:], comparison.items()):
-    bare(ax, name.split("(")[0].strip())
-    ax.imshow(out, cmap="gray", vmin=0, vmax=out.max())
-fig.suptitle("the paper's filter runs on the left panel; `hessian` runs on the"
-             " picture itself", y=1.04)
+bare(axes[1], "frangi on the image, what `hessian` does")
+axes[1].imshow(on_image, cmap="gray", vmin=0, vmax=on_image.max())
+bare(axes[2], "frangi on d/dy, what the paper does")
+axes[2].imshow(on_gradient, cmap="gray", vmin=0, vmax=on_gradient.max())
 fig.tight_layout()
 ```
 
-The two responses share a correlation of about 0.19 — they have little to do
-with each other. Whatever `skimage.filters.hessian` is, it is not this paper's
-filter with a different constant; it is a different filter.
+The two responses correlate at 0.19. No choice of constant turns one into the
+other, because `gamma` cannot change which image is differentiated.
+
+The docstring says `hessian` "uses alternative method of smoothing". Nothing in
+the code does that. The paper's discussion names the gradient step: "in HHF the
+directional gradient has greatly smoothed the image and preserved the data of
+interest". The docstring describes the step the port left out.
 
 +++
 
 ## 6. D4 — the area threshold is missing
 
-Eq. (16) is not the end of the paper's pipeline. The next paragraph is:
-
-> "Next, each region of interest (8-connected pixels) is filtered by an area
-> threshold where regions less than 250 pixels are removed and the output is
-> the estimated forehead wrinkle as shown in Fig. 2(f). Note that the area
-> threshold is based on the initial image resolution."
-
-Without it the mask is Fig. 2(e), which the paper shows as a field of speckle;
-with it, Fig. 2(f), a clean wrinkle line. The step that turns one into the
-other is a connected-component filter, and it is the reason a binary mask is
-the right output of eq. (16): an area threshold needs components, which a
-continuous vesselness does not have.
+Eq. (16) is not the end of the paper's pipeline. The paper then removes every
+8-connected region below 250 pixels, and calls the result the estimated
+wrinkle. The threshold depends on the image: the paper states that it is "based
+on the initial image resolution".
 
 ```{code-cell} ipython3
-mask = paper_eq16(frangi(PHOTO, sigmas=RIDGE_SIGMAS, gamma=15, mode="reflect"))
 kept = remove_small_objects(mask.astype(bool), max_size=249, connectivity=2)
 show_table(pd.DataFrame([
-    {"stage": "eq. (16) mask (Fig. 2e)", "share of the image set":
-        f"{mask.mean():.2%}"},
-    {"stage": "after the 250 px area threshold (Fig. 2f)",
-     "share of the image set": f"{kept.mean():.2%}"},
+    {"stage": "the eq. (16) mask",
+     "share of the 256x256 image": f"{mask.mean():.2%}"},
+    {"stage": "after the 250 px area threshold",
+     "share of the 256x256 image": f"{kept.mean():.2%}"},
 ]), index="stage")
 ```
 
-The threshold is stated to be resolution-dependent — "based on the initial
-image resolution" — so a port cannot hard-code 250 either; on the paper's
-1600×1200 originals it means something different than on a 256² crop. The
-number above is illustrative of the step, not a recommended default.
+A component filter needs components. A continuous score has none. The area
+threshold is the reason eq. (16) returns a mask.
 
 +++
 
-## 7. Replicating the paper's own figure
+## 7. Agreement with the paper's worked example
 
-Everything above reads the pipeline out of the paper. This section runs it.
+The paper's images are forehead crops from the Bosphorus face database. That
+database is not redistributable. The ground truth came from three coders and
+was never published. The headline result, a mean JSI of 75.67% over 100 images,
+is therefore closed to replication outside the group.
 
-The paper's test images are forehead crops from the Bosphorus face database
-(its ref. [19]), which is not redistributable, and the three coders'
-annotations that form its ground truth were never published — so the headline
-result, a mean JSI of 75.67% over 100 images, cannot be reproduced by anyone
-outside the group. But Fig. 2 prints one worked example at every stage, at
-845x117 and 365 ppi, and those panels are embedded in the PDF as images. That
-is enough to check the algorithm end to end: feed the paper its own panel (b),
-and compare each stage against the panel it printed.
+The paper prints one worked example at every stage, as its Fig. 2, at 845x117
+and 365 ppi. Those panels are enough to check the pipeline end to end. Give the
+paper its own panel (b), and compare each stage against the panel it printed.
 
-:::{attention} Provenance of the panels below
-The five panels are extracted from Fig. 2 of Ng, Yap, Costen and Li,
-"Automatic Wrinkle Detection using Hybrid Hessian Filter", ACCV 2014
+:::{attention} Provenance
+The panels under `notebooks/hhf_fig2_fixtures/` are extracted from Fig. 2 of
+Ng, Yap, Costen and Li, "Automatic Wrinkle Detection using Hybrid Hessian
+Filter", ACCV 2014
 ([doi:10.1007/978-3-319-16811-1_40](https://doi.org/10.1007/978-3-319-16811-1_40)),
-© Springer International Publishing. The authors' accepted manuscript is
-distributed under
+© Springer International Publishing. The authors' accepted manuscript carries
 [CC BY-NC-ND 4.0](https://creativecommons.org/licenses/by-nc-nd/4.0/).
 
-They are reproduced here, unaltered apart from conversion to 8-bit greyscale,
+They are reproduced below, unaltered apart from conversion to 8-bit greyscale,
 for the non-commercial purpose of verifying the algorithm this notebook
-assesses. They are **not** covered by this repository's own licence — see the
-`Files:` stanza for `notebooks/hhf_fig2_fixtures/` in `LICENSE`, and
-`notebooks/hhf_fig2_fixtures/README.md`. The underlying forehead photograph is
-from the Bosphorus database and is not redistributed: only the printed figure
-panels are, and only the five the comparison needs.
+assesses, with attribution as above. That use is permitted by the licence; the
+licence forbids distributing modified versions of them.
+
+They are not covered by this repository's own licence. See the `Files:` stanza
+for `notebooks/hhf_fig2_fixtures/` in `LICENSE`, and that directory's
+`README.md`. The underlying forehead photograph comes from the Bosphorus face
+database and is not redistributed: only the five printed panels the comparison
+needs.
 :::
 
-The panels are committed under `notebooks/hhf_fig2_fixtures/` so that this
-notebook runs anywhere. `make fixtures SET=hhf_fig2` regenerates them from the
-paper, via `library/generate_fixtures.py` and poppler's `pdfimages` — a
-developer step needing a local copy of the paper, which the build never does.
-
 ```{code-cell} ipython3
-import imageio.v3 as iio
-
 PANEL_FILES = {"b": "fig2b_greyscale", "c": "fig2c_gradient",
                "d": "fig2d_vesselness", "e": "fig2e_mask",
                "f": "fig2f_threshold"}
@@ -557,28 +576,22 @@ def _fixtures():
     )
 
 
-# 8-bit greyscale, read as float in 0-255 -- the range the paper works in.
+import imageio.v3 as iio
+
+# 8-bit greyscale, read as float in 0-255, the range the paper works in.
 FIXTURES = _fixtures()
 panel = {k: iio.imread(FIXTURES / f"{name}.png").astype(float)
          for k, name in PANEL_FILES.items()}
-grey = panel["b"]                # (b), the greyscale forehead, in 0-255
+grey = panel["b"]
 ```
 
-Step 1 is eq. (1), and it settles D3 on the paper's own data: panel (c) is the
-derivative down the rows, and is uncorrelated with the derivative across them.
+Step 1 is eq. (1). It settles D3 on the paper's own data. Panel (c) is the
+derivative down the rows. It has no relation to the derivative across them.
 
 ```{code-cell} ipython3
-def standardise(a):
-    return (a - a.mean()) / a.std()
-
-
-def agreement(a, b):
-    return np.corrcoef(standardise(a).ravel(), standardise(b).ravel())[0, 1]
-
-
 show_table(pd.DataFrame(
-    [{"candidate for panel (c)": label, "correlation with the printed panel":
-      f"{agreement(candidate, panel['c']):+.3f}"}
+    [{"candidate for panel (c)": label,
+      "correlation with the printed panel": f"{agreement(candidate, panel['c']):+.3f}"}
      for label, candidate in (
          ("d/dy, down the rows", ndi.gaussian_filter(grey, 1, order=(1, 0))),
          ("d/dx, across the columns", ndi.gaussian_filter(grey, 1, order=(0, 1))),
@@ -586,35 +599,30 @@ show_table(pd.DataFrame(
     index="candidate for panel (c)")
 ```
 
-The caption for panel (c) also says how: "Gaussian filter was used to derive
-the directional gradient from greyscale image", so eq. (1) is a Gaussian
-derivative rather than a finite difference. Steps 2 to 5 then run as specified:
-σ ∈ {1, 3, 5, 7}, β₁ = 0.5, β₂ = 15, eq. (16) exactly as written, and the
-250 px area threshold.
+Steps 2 to 5 then run as the paper specifies them:
+$\sigma \in \{1, 3, 5, 7\}$, $\beta_1 = 0.5$, $\beta_2 = 15$, eq. (16) as
+written, and the 250 px area threshold.
 
 ```{code-cell} ipython3
-def jaccard(a, b):
-    """The paper's JSI, eq. (17), between two boolean masks."""
-    a, b = np.asarray(a, bool), np.asarray(b, bool)
-    return (a & b).sum() / max((a | b).sum(), 1)
-
-
-# Fig. 2(c): "Gaussian filter was used to derive the directional gradient".
-gradient = ndi.gaussian_filter(grey, 1, order=(1, 0))                 # eq. (1)
-ours_d = frangi(gradient, sigmas=(1, 3, 5, 7), beta=0.5, gamma=15,    # eqs. (2)-(15)
+gradient = ndi.gaussian_filter(grey, 1, order=(1, 0))                  # eq. (1)
+ours_d = frangi(gradient, sigmas=(1, 3, 5, 7), beta=0.5, gamma=15,     # (2)-(15)
                 black_ridges=True, mode="reflect")
-ours_e = ours_d <= 0                                                  # eq. (16)
-ours_f = remove_small_objects(ours_e, max_size=249, connectivity=2)   # 250 px
+ours_e = ours_d <= 0                                                   # eq. (16)
+ours_f = remove_small_objects(ours_e, max_size=249, connectivity=2)    # 250 px
 
 show_table(pd.DataFrame([
-    {"stage": "(c) directional gradient", "agreement with the printed panel":
-        f"correlation {agreement(gradient, panel['c']):+.3f}"},
-    {"stage": "(d) vesselness", "agreement with the printed panel":
-        f"correlation {agreement(ours_d, panel['d']):+.3f}"},
-    {"stage": "(e) eq. (16) mask", "agreement with the printed panel":
-        f"JSI {jaccard(ours_e, panel['e'] > 127):.3f}"},
-    {"stage": "(f) after the area threshold", "agreement with the printed panel":
-        f"JSI {jaccard(ours_f, panel['f'] > 127):.3f}"},
+    {"stage": "(c) directional gradient",
+     "agreement with the printed panel":
+         f"correlation {agreement(gradient, panel['c']):+.3f}"},
+    {"stage": "(d) vesselness",
+     "agreement with the printed panel":
+         f"correlation {agreement(ours_d, panel['d']):+.3f}"},
+    {"stage": "(e) eq. (16) mask",
+     "agreement with the printed panel":
+         f"JSI {jaccard(ours_e, panel['e'] > 127):.3f}"},
+    {"stage": "(f) after the area threshold",
+     "agreement with the printed panel":
+         f"JSI {jaccard(ours_f, panel['f'] > 127):.3f}"},
 ]), index="stage")
 ```
 
@@ -624,54 +632,57 @@ stages = [("(c) gradient", panel["c"], gradient),
           ("(e) eq. (16) mask", panel["e"], ours_e.astype(float)),
           ("(f) area thresholded", panel["f"], ours_f.astype(float))]
 
-fig, axes = plt.subplots(4, 2, figsize=(11, 5.4))
+fig, axes = plt.subplots(4, 2, figsize=(11, 5.6))
 for (name, theirs, ours), (left, right) in zip(stages, axes):
     bare(left, f"paper, {name}")
     left.imshow(theirs, cmap="gray")
     bare(right, f"ours, {name}")
     right.imshow(ours, cmap="gray")
-fig.suptitle("the paper's Fig. 2 (left) against the pipeline as this notebook"
-             " reads it (right)", y=1.02)
+fig.text(0.5, -0.02,
+         "Left column: panels from Fig. 2 of Ng, Yap, Costen and Li, "
+         "'Automatic Wrinkle Detection using Hybrid Hessian Filter', ACCV 2014,\n"
+         "doi:10.1007/978-3-319-16811-1_40, \u00a9 Springer International "
+         "Publishing, accepted manuscript under CC BY-NC-ND 4.0. "
+         "Right column: computed here.",
+         ha="center", va="top", fontsize=7, color=MUTED)
 fig.tight_layout()
 ```
 
-The wrinkle is recovered at every stage. The differences are what a printed
-figure explains: our panel (c) is smoother than theirs because theirs was
-computed on the full-resolution crop before the figure was downsampled, so it
-retains skin texture ours never sees, and our (e) accordingly carries less
-speckle.
+Every stage recovers the wrinkle. The paper's panel (c) carries more skin
+texture than ours, and its panel (e) holds more speckle. A likely reason is
+that the paper computed its panels at the resolution of the original crop,
+before the figure was reduced for printing, so its input held detail that the
+printed panel (b) no longer carries. This is a reading, not a result: nothing
+here measures the original resolution.
 
-How good is JSI 0.57 on the last row? The honest ceiling is well short of 1:
-panel (e) as printed is a JPEG-compressed, re-thresholded reproduction, and
-connected components are fragile to that. The way to measure the ceiling is to
-run the last step on *the paper's own* panel (e) and see how well that
-reproduces *the paper's own* panel (f).
+The ceiling for the last row is below 1. Panel (e) is a printed, compressed
+reproduction, and connected components are fragile to that. Measure the ceiling
+by running the last step on the paper's own panel (e), against its own panel
+(f).
 
 ```{code-cell} ipython3
 their_e = panel["e"] > 127
 show_table(pd.DataFrame(
     [{"area threshold": f"{ms} px",
-      "paper's (e) -> paper's (f)":
+      "paper's (e) to paper's (f)":
           f"{jaccard(remove_small_objects(their_e, max_size=ms - 1, connectivity=2), panel['f'] > 127):.3f}",
-      "ours (e) -> paper's (f)":
+      "ours (e) to paper's (f)":
           f"{jaccard(remove_small_objects(ours_e, max_size=ms - 1, connectivity=2), panel['f'] > 127):.3f}"}
      for ms in (100, 250, 400, 600)]), index="area threshold")
 ```
 
-Two things fall out. The paper's own panels only reach JSI 0.557 through this
-step — so that is the ceiling, and our end-to-end 0.574 matches it. Starting
-from the greyscale photograph, this reading of the algorithm reproduces the
-paper's published result about as closely as the paper's own printed
-intermediate does. The reading is correct.
+The paper's own panels reach JSI 0.557 through this step. Our end-to-end result
+is 0.574. This reading of the pipeline reproduces the paper's published result
+as closely as the paper's own printed intermediate does.
 
-And the paper's ceiling peaks at its stated 250 px, independent confirmation of
-both that number and the 8-connectivity — neither of which is in `skimage`.
-Ours keeps improving past 250, which is the over-segmentation the paper itself
-reports ("HHF ... increases the true positive rate, but it also generated false
-wrinkle"), amplified by our smoother low-resolution input.
+The paper's column peaks at its stated 250 px. That confirms both the number
+and the 8-connectivity. `skimage` has neither.
 
-One more control, because it settles D2 on the paper's data rather than on
-`camera`. The mask of eq. (16) is invariant to `gamma`:
+Our column keeps rising past 250 px. The paper reports the same tendency: HHF
+"increases the true positive rate, but it also generated false wrinkle".
+
+On the paper's data, as on `camera`, the eq. (16) mask does not move with
+`gamma`.
 
 ```{code-cell} ipython3
 show_table(pd.DataFrame(
@@ -680,19 +691,15 @@ show_table(pd.DataFrame(
      for g in (15, 15 / 255, 0.1, None)]), index="gamma")
 ```
 
-Every value of `gamma` gives the same mask, because the mask is decided by the
-sign of λ₂. That is why `gamma=15` does no harm *inside the paper's pipeline*,
-where eq. (16) discards the magnitudes, and does great harm in `skimage`, which
-returns them.
+Every `gamma` gives the same mask, because the sign of $\lambda_2$ decides it.
+`gamma=15` does no harm inside the paper's pipeline, where eq. (16) drops the
+magnitudes. It does harm in `skimage`, which returns them.
 
 +++
 
-## 8. Why nothing caught it
+## 8. Why the tests pass
 
-The filter has tests. They pass on the current behaviour and would pass on
-almost any other.
-
-The assertion that covers the photographic case is
+The assertion that covers the photographic case is:
 
 ```python
 a_black = crop(camera(), ((200, 212), (100, 312)))
@@ -700,199 +707,230 @@ assert_allclose(hessian(a_black, black_ridges=True, mode='reflect'),
                 np.ones((100, 100)), atol=1 - 1e-7)
 ```
 
-Its tolerance is one minus a rounding constant, so it admits any output whose
-every pixel is at least `1e-7`. Run on that exact input:
+The tolerance is one minus a rounding constant. It admits any output whose
+every pixel is at least 1e-7. Run it on that input.
 
 ```{code-cell} ipython3
-from skimage.util import crop, invert
+from skimage.util import crop
 
 a_black = crop(ski.data.camera(), ((200, 212), (100, 312)))
 deviation = np.abs(hessian(a_black, black_ridges=True, mode="reflect") - 1.0)
 show_table(pd.DataFrame([
     {"quantity": "tolerance `atol=1 - 1e-7`", "value": f"{1 - 1e-7:.7f}"},
-    {"quantity": "worst deviation from 1 actually seen", "value": f"{deviation.max():.7f}"},
+    {"quantity": "worst deviation from 1", "value": f"{deviation.max():.7f}"},
     {"quantity": "margin by which the assertion passes",
      "value": f"{(1 - 1e-7) - deviation.max():.2e}"},
 ]), index="quantity", floatfmt=".7g")
 ```
 
-The assertion is satisfied, with a margin of about one part in a million,
-because `gamma=15` pushes the un-clamped pixels close to zero and the clamp
-pushes the rest to exactly 1 — an output that is *nearly* all-ones passes a
-test asserting all-ones. The test therefore measures the two defects working
-together and reads them as correct. Any repair that restores a real ridge
-response will make this assertion fail, which is why it has to be rewritten
-rather than re-toleranced.
+The assertion passes by about one part in a million. The clamp puts most pixels
+at exactly 1, so an output that is nearly all ones satisfies a test that asserts
+all ones. The test measures D1 and reads it as correct. Any repair that
+restores a ridge response makes this assertion fail.
 
-The other assertion, `assert_equal(hessian(zeros), ones)`, runs on an image
-with no structure at all, where every pixel is rejected and therefore clamped.
-It asserts the inversion rather than catching it.
+A second assertion, `assert_equal(hessian(zeros), ones)`, runs on an image with
+no structure. Every pixel is rejected, so every pixel is at the sentinel. It
+asserts D1.
 
 +++
 
-## 9. Comparators
+## 9. Properties that ought to hold
 
-`hessian` sits in `skimage.filters` beside three other ridge filters, and is
-documented like them. The smallest test of what that implies is one dark bar on
-a flat white field: one ridge, and nothing else in the picture.
+A ridge filter answers more strongly on a ridge than on nothing at all. Test
+that on one dark bar on a flat field. The image holds one ridge and nothing
+else.
 
 ```{code-cell} ipython3
 show_table(pd.DataFrame(
     [{"filter": name,
-      "on the empty background": f"{out[BACKGROUND].mean():.4f}",
+      "on the empty field": f"{out[FIELD].mean():.4f}",
       "along the bar": f"{out[SPINE].mean():.4f}",
-      "stronger on the bar?": str(bool(out[SPINE].mean() > out[BACKGROUND].mean()))}
+      "stronger on the bar?": str(bool(out[SPINE].mean() > out[FIELD].mean()))}
      for name, out in (
-         ("frangi", frangi(RIDGE, sigmas=RIDGE_SIGMAS, mode="reflect")),
-         ("sato", sato(RIDGE, sigmas=RIDGE_SIGMAS, mode="reflect")),
-         ("meijering", meijering(RIDGE, sigmas=RIDGE_SIGMAS, mode="reflect")),
-         ("hessian", hessian(RIDGE, sigmas=RIDGE_SIGMAS, mode="reflect")))]),
+         ("frangi", frangi(BAR, sigmas=SIGMAS, mode="reflect")),
+         ("sato", sato(BAR, sigmas=SIGMAS, mode="reflect")),
+         ("meijering", meijering(BAR, sigmas=SIGMAS, mode="reflect")),
+         ("hessian", hessian(BAR, sigmas=SIGMAS, mode="reflect")))]),
     index="filter", floatfmt=".4f")
 ```
 
-Three of the four answer zero on the background and strongly on the bar.
-`hessian` answers 1.0000 on both, which is the collision of §1 in its purest
-form: at full precision the background is exactly 1.0 and the bar is
-0.999999995, so the empty field outranks a perfect ridge by 5e-09. Stated as
-the property that ought to hold — *a ridge filter answers more strongly on a
-ridge than on nothing at all* — only `hessian` fails, and it fails by a margin
-too small to see in the table above.
-
-That failure is real, but it is a statement about `hessian` as a *ridge
-filter*, which is the contract its docstring and its placement beside the other
-three imply. It is not a defect in eq. (16): the paper's mask marks rejected
-pixels on purpose, and the paper never asks it to rank ridges. The defect is
-that `skimage` exposes the intermediate mask under a docstring promising a
-filtered image, without the input transform or the area threshold that make it
-a wrinkle detector.
-
-The docstring's second reference, Kroon's MATLAB `FrangiFilter2D`, is the
-source `frangi` itself was ported from, and `frangi` has no clamp; I have not
-read that MATLAB source directly, so I take the clamp's provenance from eq.
-(16), which it matches exactly, and claim nothing about Kroon's code.
+Three filters answer zero on the empty field and strongly on the bar. `hessian`
+answers 1.0000 on both. At full precision the empty field is exactly 1.0 and
+the bar is 0.999999995. The empty field outranks a perfect ridge by 5e-09,
+which is section 3.1 again.
 
 +++
 
-## 10. Ways forward
+## 10. Ways forward, and what each costs
 
-The defects are independent, and the paper decides most of the choices.
+The defects are independent. The paper decides most of the choices.
 
-**`gamma` should default to `None`, as `frangi`'s does.** 15 is the paper's β₂
-for 0-255 data and is right for a `uint8` image, but §4 showed it makes the
-output depend on the input dtype, which no other filter in the module does.
-`frangi` already solves this: `gamma=None` resolves to half the largest Hessian
-norm, so it adapts to whatever range it is given. Hard-coding a literal is the
-only thing that cannot be defended.
+`gamma` should default to `None`, as `frangi`'s does. 15 is the paper's
+$\beta_2$ for 0-255 data and is right for a `uint8` image. Section 4 showed
+that it ties the answer to the dtype. `gamma=None` takes the constant from the
+image instead.
 
-**Eq. (16) must be completed or dropped, not left in half.** Two coherent
-outputs exist, and the present one is neither:
+Eq. (16) must be completed or dropped. Leaving it half-written is what produces
+the sentinel.
 
 ```{code-cell} ipython3
+shipped = hessian(PHOTO, sigmas=SIGMAS, mode="reflect")
+candidates = {
+    "drop the clamp, keep gamma=15":
+        frangi(PHOTO, sigmas=SIGMAS, gamma=15, mode="reflect"),
+    "drop the clamp, gamma=None":
+        frangi(PHOTO, sigmas=SIGMAS, mode="reflect"),
+    "complete eq. (16)":
+        paper_eq16(frangi(PHOTO, sigmas=SIGMAS, gamma=15, mode="reflect")),
+}
 show_table(pd.DataFrame(
     [{"candidate": label,
-      "on the empty background": f"{out[BACKGROUND].mean():.9f}",
-      "along the bar": f"{out[SPINE].mean():.9f}"}
-     for label, out in (
-         ("as shipped", hessian(RIDGE, sigmas=RIDGE_SIGMAS, mode="reflect")),
-         ("eq. (16) completed",
-          paper_eq16(frangi(RIDGE, sigmas=RIDGE_SIGMAS, gamma=15,
-                            mode="reflect"))),
-         ("clamp dropped, gamma=None",
-          frangi(RIDGE, sigmas=RIDGE_SIGMAS, mode="reflect")))]),
+      "pixels that change on camera": f"{(out != shipped).mean():.2%}",
+      "on the empty field": f[FIELD].mean(),
+      "along the bar": f[SPINE].mean()}
+     for (label, out), f in zip(candidates.items(), (
+         frangi(BAR, sigmas=SIGMAS, gamma=15, mode="reflect"),
+         frangi(BAR, sigmas=SIGMAS, mode="reflect"),
+         paper_eq16(frangi(BAR, sigmas=SIGMAS, gamma=15, mode="reflect"))))]),
     index="candidate", floatfmt=".9f")
 ```
 
-The first row is the sharpest statement of D1 in the notebook, and it needs no
-adjustment to any parameter to produce: the bar scores 0.999999995, which is a
-genuine vesselness with the filter working exactly as intended, and the empty
-background scores 1.0 from the clamp. The sentinel is not merely on the same
-scale as the scores — it sits *above the largest score the filter can produce*,
-so the two can never be separated.
+Dropping the clamp changes 18.38% of the pixels of `camera` and restores the
+rank order. Completing eq. (16) gives the paper's mask. That mask marks the
+empty field on this input, because the input is an image and not a gradient
+field. It is right inside the paper's pipeline and wrong as a general ridge
+filter.
 
-Completing eq. (16) gives the paper's mask, which marks the background on this
-input because the input is an image rather than a gradient field — correct
-inside the paper's pipeline, useless as a general ridge filter. Dropping the
-clamp gives a vesselness that behaves.
+The clamp is one vectorised assignment. Its cost is below the run-to-run
+spread of the filter it follows, so speed does not choose between the
+candidates.
 
-**Which leaves the real question.** With eq. (16) dropped and `gamma` following
-`frangi`, `hessian` *is* `frangi` — the same call with the same arguments, and
-the row above shows it. The only thing that would make it a distinct filter is
-the step the docstring already gestures at and the code never had: the
-directional gradient. A faithful HHF is
+```{code-cell} ipython3
+import timeit
 
-```python
-def hybrid_hessian(image, axis=0, sigmas=(1, 3, 5, 7), beta=0.5,
-                   gamma=15, min_size=250):
-    gradient = ndi.gaussian_filter(image.astype(float), 1, order=_order(axis))
-    ridge = frangi(gradient, sigmas=sigmas, beta=beta, gamma=gamma)
-    return remove_small_objects(ridge <= 0, max_size=min_size - 1, connectivity=2)
+
+def spread(call, repeats=5):
+    """Best and worst of `repeats` timings, in seconds."""
+    times = [timeit.timeit(call, number=1) for _ in range(repeats)]
+    return min(times), max(times)
+
+
+with_clamp = spread(lambda: hessian(PHOTO, sigmas=SIGMAS, mode="reflect"))
+without = spread(
+    lambda: frangi(PHOTO, sigmas=SIGMAS, gamma=15, mode="reflect"))
+show_table(pd.DataFrame([
+    {"call": "hessian, with the clamp",
+     "best of 5": f"{with_clamp[0]:.3f} s", "worst of 5": f"{with_clamp[1]:.3f} s"},
+    {"call": "frangi, the same work without it",
+     "best of 5": f"{without[0]:.3f} s", "worst of 5": f"{without[1]:.3f} s"},
+]), index="call")
 ```
-
-which returns a boolean mask, takes an orientation the present signature has no
-room for, carries a `gamma` that is only meaningful for 0-255 input, and has a
-resolution-dependent `min_size` with no safe default. That
-is a new function, not a repair of this one. The choice is to write it, or to
-deprecate `hessian` in favour of `frangi`.
 
 +++
 
-## 11. Summary
+## 11. What not to do
 
-`skimage.filters.hessian` is a partial port. Its constants come from the paper
-— β₁, β₂ and the scales, the last with an extra 9 — while the pipeline around
-them does not.
+Do not rescale `gamma` and stop there. On a `uint8` image `gamma=15` is already
+the paper's constant. Lowering it raises the scores toward 1, which moves them
+into the sentinel instead of away from it.
+
+```{code-cell} ipython3
+rows = []
+for g in (15, 1.0, 15 / 255):
+    out = hessian(BAR, sigmas=SIGMAS, gamma=g, mode="reflect")
+    bar = out[SPINE].mean()
+    rows.append({"setting": f"gamma = {g:g}",
+                 "the empty field": f"{out[FIELD].mean():.1f}, the sentinel",
+                 "gap between the bar and the sentinel": 1 - bar})
+show_table(pd.DataFrame(rows), index="setting", floatfmt=".2e")
+```
+
+At `gamma=15` a perfect ridge sits 5e-09 below the sentinel. At `gamma=1` the
+gap reaches 0: the ridge and the empty field hold the same `float64` value, and
+nothing downstream can tell them apart.
+
+Do not delete the clamp and call `hessian` repaired. With the clamp gone and
+`gamma` following `frangi`, `hessian` runs the same call with the same
+arguments as `frangi`.
+
+```{code-cell} ipython3
+print("clamp dropped, output identical to frangi(gamma=15):",
+      np.array_equal(candidates["drop the clamp, keep gamma=15"],
+                     frangi(PHOTO, sigmas=SIGMAS, gamma=15, mode="reflect")))
+```
+
+A repair of that shape turns a documented filter into an alias, without saying
+so. The step that makes HHF a distinct filter is the directional gradient of
+section 5. A faithful port is:
+
+```python
+def hybrid_hessian(image, axis=0, sigmas=(1, 3, 5, 7), beta=0.5, gamma=15,
+                   min_size=250):
+    order = tuple(1 if i == axis else 0 for i in range(image.ndim))
+    gradient = ndi.gaussian_filter(image.astype(float), 1, order=order)
+    ridge = frangi(gradient, sigmas=sigmas, beta=beta, gamma=gamma)
+    return remove_small_objects(ridge <= 0, max_size=min_size - 1,
+                                connectivity=2)
+```
+
+It returns a boolean mask. It takes an orientation that the present signature
+has no room for. Its `gamma` suits 0-255 input only. Its `min_size` follows the
+image resolution and has no safe default. It is a new function, not a repair of
+this one.
+
++++
+
+## 12. Summary
+
+`skimage.filters.hessian` is a partial port. Its constants come from the paper.
+The pipeline around them does not.
 
 | | defect | evidence | weight |
 | --- | --- | --- | --- |
-| D1 | eq. (16) is implemented by half: the `1` branch without the `0` | the 1-pixels match the paper's mask exactly, and the rest keeps the vesselness — one array carrying two opposite senses, whose sentinel (1.0) outranks the best genuine score (0.999790) | fatal |
-| D2 | `gamma=15` is a hard-coded absolute constant, so the answer depends on the input dtype | `hessian(camera())` and `hessian(img_as_float(camera()))` correlate at only 0.73; the other three filters are unaffected | severe, and `frangi`'s `gamma=None` already fixes it |
-| D3 | eq. (1), the directional gradient, is absent | every equation from (2) on is written in ∂I/∂y, not `I`; the responses correlate at 0.19, and §7 reproduces the paper's Fig. 2 only with the gradient in place | it is a different filter |
-| D4 | the 250 px area threshold is absent | the paper's own figures are speckle before it and a wrinkle line after | the mask is unusable without it |
-| D5 | the test asserts the broken output | `atol=1 - 1e-7` passes with a margin of 1e-06, because D1 and D2 together make the output nearly all-ones | why it survived |
+| D1 | eq. (16) is implemented by half: the `1` branch without the `0` | $V < 1$ by §3.1, and the clamp writes 1, so the sentinel is above every score; 15 of 15 corpus images | fatal |
+| D2 | `gamma=15` is absolute, so the answer follows the input dtype | uint8 and float answers correlate at 0.73; the other three filters are unaffected | severe, and `frangi`'s `gamma=None` already fixes it |
+| D3 | eq. (1), the directional gradient, is absent | every equation from (2) on is written in $\partial I/\partial y$; the responses correlate at 0.19; §7 reproduces Fig. 2 only with the gradient in place | it is a different filter |
+| D4 | the 250 px area threshold is absent | §7 finds the paper's own JSI peak at 250 px | the mask is unusable without it |
+| D5 | the test asserts the broken output | `atol=1 - 1e-7` passes by 1.28e-06, because D1 puts most pixels at 1 | why it survived |
 
-The single sentence: **`hessian` computes step 3 of a five-step pipeline on the
-wrong input, keeps half of step 4, drops step 5, and returns the result under a
-docstring describing none of it.**
+`hessian` computes step 3 of a five-step pipeline on the wrong input, keeps
+half of step 4, drops step 5, and returns the result under a docstring that
+describes none of it.
 
-**Limits.** One photograph (`camera`, decimated to 256²), one synthetic bar, and
-the default `sigmas`; no 3-D case, and no forehead imagery of the kind the
+### Limits
+
+The corpus is 15 images from `skimage.data`, decimated by 2, at the default
+`sigmas`. There is no 3-D case. There is no forehead imagery of the kind the
 paper targets.
 
-The algorithm is read from the 2014 paper directly
-(`library/ng2014hybrid_hessian.pdf`), so D3 and D4 are quotations, and §6
-reproduces its Fig. 2 end to end from the printed panel (b) — matching the
-paper's own intermediate-to-final agreement (JSI 0.574 against a ceiling of
-0.557). The reading of the pipeline is therefore confirmed, not assumed.
+§3.1 proves that the sentinel is above every score. That proof covers eq. (14)
+as the paper writes it and as `frangi` implements it. It does not cover other
+vesselness formulations.
 
-What §7 does **not** establish is the paper's headline claim. Its mean JSI of
-75.67% is over 100 forehead crops from the Bosphorus face database, which is
-not redistributable, against ground truth from three coders that was never
-published; that result cannot be checked by anyone outside the group. Nor is
-§6 a test of accuracy — panel (f) is the paper's *output*, not annotated truth,
-so agreeing with it shows the implementation is faithful, not that the
-algorithm is right. An independent evaluation that obtained the authors' own
+§7 confirms this reading of the pipeline. It does not confirm the paper's
+headline accuracy. Panel (f) is the paper's output, not annotated truth, so
+agreement with it shows that the implementation is faithful, not that the
+algorithm is accurate. An independent evaluation that obtained the authors' own
 code ([Osman et al. 2020](https://doi.org/10.3390/jimaging6040017)) reports a
-mean JSI of 31.69% for HHF on FERET, against the 75.67% reported here — so the
-headline number does not appear to be portable off its original dataset.
+mean JSI of 31.69% for HHF on FERET, against the 75.67% reported in the paper.
 
-§7 also rests on one image, reproduced through print and JPEG at 845×117, where
-the paper's σ and its resolution-dependent 250 px threshold were tuned for
-1600×1200 originals.
+§7 also rests on one image, reproduced through print and JPEG at 845x117, where
+the paper's $\sigma$ and its resolution-dependent 250 px threshold were set for
+1600x1200 originals.
 
-One reading is worth stating against myself. Eq. (14) sets the vesselness to
-zero when λ₂ < 0, while the surrounding text says "λ₂ < 0 highlights the data
-of interest" — the paper contradicts itself on that sign, and the figures are
-the only tiebreak. Nothing above depends on resolving it: D1 is about eq. (16)
-being half-implemented whichever sign eq. (14) uses.
+Eq. (14) sets the score to zero when $\lambda_2 < 0$. The surrounding text says
+that $\lambda_2 < 0$ marks the data of interest. The paper contradicts itself on
+that sign, and its figures are the only tiebreak. Nothing above depends on it:
+D1 concerns eq. (16), whichever sign eq. (14) uses.
 
-**Which build this measures.** The cell below names it: a working tree in which
-`frangi` has had the missing `sigma**2` factor of issue #7711 restored (see
-`on_frangi.md`). `hessian` delegates to `frangi`, so it inherits that. This
-matters only for D2, and only in the direction that makes the released build
-worse: `sigma**2 >= 1` for every default scale, so `S` in this build is at
-least as large as on the released build at every pixel, and the structuredness
-gate at `gamma = 15` is therefore at least as open here as it is in a release.
-D1, D3, D4 and D5 do not depend on the build.
+### Which build this measures
+
+`hessian` delegates to `frangi`, so it inherits whatever that function does.
+This build restores the `sigma**2` factor of issue #7711; see `on_frangi.md`.
+That affects D2 only, and in the direction that makes a release worse:
+$\sigma^2 \ge 1$ at every default scale, so $\mathcal{S}$ here is at least as
+large as in a release, and the gate at `gamma=15` is at least as open. D1, D3,
+D4 and D5 do not depend on the build.
 
 ```{code-cell} ipython3
 print(f"scikit-image {ski.__version__}")
