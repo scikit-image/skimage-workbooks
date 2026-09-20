@@ -4,8 +4,7 @@ project:
   authors:
     - name: Various AI agents, guided by scikit-image developers
   github: https://github.com/scikit-image/skimage-workbooks
-  execute:
-    cache: true
+  output_matplotlib_strings: remove
   toc:
     - file: index.md
     - file: notebooks/rotate_description.md

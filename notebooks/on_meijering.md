@@ -330,7 +330,7 @@ cross-ridge second derivative on the axis is $e(\sigma) = w(w^2+\sigma^2)^{-3/2}
 The normalised response $r_\gamma(\sigma) = \sigma^{2\gamma} e(\sigma)$ peaks at
 
 $$
-\sigma^\*(\gamma) = w\sqrt{\frac{2\gamma}{3-2\gamma}},
+\sigma^{*}(\gamma) = w\sqrt{\frac{2\gamma}{3-2\gamma}},
 $$
 
 with value $D_\gamma = w^{2\gamma-2} c(\gamma)$. Two cases matter:
