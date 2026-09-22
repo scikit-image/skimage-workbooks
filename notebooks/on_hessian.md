@@ -2366,3 +2366,31 @@ today, border artefact included. Fixes A and C in section 10 change that border
 deliberately, so a caller cannot have both the old numbers and the corrected
 ones. The shim is for callers who need bit-compatibility during a migration; it
 is not a recommendation to keep computing the old values.
+
++++
+
+## 13. References
+
+Lindeberg, T. (1993). Discrete derivative approximations with scale-space
+properties: A basis for low-level feature extraction. *Journal of Mathematical
+Imaging and Vision*, 3(4), 349–376.
+DOI: [10.1007/BF01664794](https://doi.org/10.1007/BF01664794).
+Author's copy:
+<https://people.kth.se/~tony/papers/disc-der-approx-Njet.jmiv93.pdf>.
+
+Lindeberg, T. (2024). Discrete approximations of Gaussian smoothing and
+Gaussian derivatives. *Journal of Mathematical Imaging and Vision*, 66(5),
+759–800.
+DOI: [10.1007/s10851-024-01196-9](https://doi.org/10.1007/s10851-024-01196-9).
+Open access under CC BY 4.0. Preprint:
+[arXiv:2311.11317](https://arxiv.org/abs/2311.11317).
+
+scikit-image issue #6451, *One of
+hessian_matrix(use_gaussian_derivative=True/False) seems to be off by a factor
+of 2* (2022-07-25, open):
+<https://github.com/scikit-image/scikit-image/issues/6451>.
+
+Signal Processing Stack Exchange, *Are scipy second-order Gaussian derivatives
+correct?*:
+<https://dsp.stackexchange.com/questions/78280/are-scipy-second-order-gaussian-derivatives-correct>.
+The accepted answer is by an author of DIPlib, <https://diplib.org>.
