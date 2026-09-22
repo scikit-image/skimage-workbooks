@@ -6,3 +6,6 @@ These workbooks allow us to explore technical decisions made in the implementati
 Most of this material is AI-generated. See the repository `README.md` for what
 that means for re-use.
 ```
+
+Shared PDFs of the cited papers are in the [Zotero group
+library](https://www.zotero.org/groups/6683409/skimage/items).
