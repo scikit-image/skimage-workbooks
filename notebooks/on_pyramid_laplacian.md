@@ -817,6 +817,15 @@ implement. What remains is API.
    channel-axis inputs. Both closed PRs contain usable tests.
 4. **Decide the `max_layer` corner case** explicitly: either keep yielding
    1-by-1 layers to honour the docstring, or change the docstring.
+5. **In skimage2, change the default depth.** The default `max_layer=-1`
+   reduces until a 1-by-1 residual, which is a near-mean scalar with no
+   spatial content, and it inflates the layer count. A default that stops at a
+   small but non-trivial residual (a minimum residual size, or a fixed number
+   of octaves) gives a pyramid whose last element is a recognisable image, as
+   in the book's figures, and makes the reconstruction API simpler to explain:
+   every element is an image, and the last one is the low-pass residual. The
+   API goal for skimage2 is the cleanest, most intuitive round trip:
+   decompose, edit layers, collapse, and get the input back to rounding.
 
 ## 14. What each fix costs
 
