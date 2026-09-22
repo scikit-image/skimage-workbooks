@@ -99,10 +99,19 @@ execute the notebook.
 With `title` in the frontmatter, do not repeat the title as a `#` heading in
 the body. Start the body sections at `##`.
 
-The first line of the body lists every agent that worked on the notebook, in
-the form of the commit tag: `Assisted-by: <harness>:<model>`, one line per
-agent, for example `Assisted-by: claude-code:claude-fable-5-1`. An agent that
-edits the notebook later adds its own line; it does not remove earlier ones.
+The body starts with an `assisted-by` block listing every agent that worked
+on the notebook, one per line in the commit-tag form `<harness>:<model>`, with
+an optional note after the tag:
+
+```
+:::{assisted-by}
+claude-code:claude-fable-5-1
+:::
+```
+
+The directive is defined in `_plugins/assisted_by.mjs` and renders the list as
+a small table. An agent that edits the notebook later adds its own line; it
+does not remove earlier ones.
 
 Add a new notebook to the top of the `toc` list in `myst.yml`, directly after
 `index.md`. The list is in order of creation, newest first. An edit to a
