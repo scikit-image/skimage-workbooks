@@ -1,4 +1,6 @@
 ---
+title: On the `hessian` filter
+date: 2026-09-19
 jupytext:
   formats: ipynb,md:myst
   text_representation:
@@ -10,8 +12,6 @@ kernelspec:
   display_name: Python 3 (ipykernel)
   language: python
 ---
-
-# On the `hessian` filter
 
 `skimage.filters.hessian` calls `frangi`, then sets every non-positive pixel to
 1. The docstring calls the result a filtered image and cites the Hybrid Hessian

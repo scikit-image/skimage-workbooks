@@ -1,4 +1,6 @@
 ---
+title: The second derivative of a smoothed image
+date: 2026-09-14
 jupytext:
   formats: ipynb,md:myst
   text_representation:
@@ -11,8 +13,6 @@ kernelspec:
   display_name: Python 3 (ipykernel)
   language: python
 ---
-
-# The second derivative of a smoothed image
 
 `skimage.feature.hessian_matrix` computes second derivatives of an image at a
 chosen scale. Four filters depend on it — `frangi`, `sato`, `meijering` and

@@ -1,4 +1,6 @@
 ---
+title: On the maps you can hand to `warp`
+date: 2026-09-14
 jupytext:
   formats: ipynb,md:myst
   text_representation:
@@ -10,8 +12,6 @@ kernelspec:
   language: python
   name: python3
 ---
-
-# On the maps you can hand to `warp`
 
 `skimage.transform.warp` takes a second argument, `inverse_map`, that accepts
 four different kinds of object: a geometric transform, a bound `.inverse`

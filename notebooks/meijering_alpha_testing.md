@@ -1,4 +1,6 @@
 ---
+title: Testing the α in `meijering`
+date: 2026-09-17
 jupytext:
   formats: ipynb,md:myst
   text_representation:
@@ -11,8 +13,6 @@ kernelspec:
   display_name: Python 3 (ipykernel)
   language: python
 ---
-
-# Testing the α in `meijering`
 
 `skimage.filters.meijering` documents its `alpha` argument as a "shaping filter
 constant, that tunes shape selection to flat elongated features, rather than

@@ -1,4 +1,6 @@
 ---
+title: On frangi
+date: 2026-09-14
 jupytext:
   formats: ipynb,md:myst
   text_representation:
@@ -11,8 +13,6 @@ kernelspec:
   display_name: Python 3 (ipykernel)
   language: python
 ---
-
-# On frangi
 
 `skimage.filters.frangi` has five separable defects. Four are in the filter,
 one is inherited from `hessian_matrix` and is fixed in `on_hessian.md`. This

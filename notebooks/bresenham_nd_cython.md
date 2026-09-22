@@ -1,4 +1,6 @@
 ---
+title: N-D Bresenham: Cython, and why other libraries disagree
+date: 2026-09-14
 jupytext:
   formats: ipynb,md:myst
   text_representation:
@@ -11,8 +13,6 @@ kernelspec:
   display_name: Python 3 (ipykernel)
   language: python
 ---
-
-# N-D Bresenham: Cython, and why other libraries disagree
 
 `_bresenham_nd` (compiled locally from `bresenham_nd_local/_bresenham.pyx`) is
 the N-D form of scikit-image’s integer Bresenham. In 2-D it matches `_line`

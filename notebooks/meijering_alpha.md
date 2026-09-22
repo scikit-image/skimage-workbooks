@@ -1,4 +1,6 @@
 ---
+title: The α in Meijering's neuriteness filter
+date: 2026-09-16
 jupytext:
   formats: ipynb,md:myst
   text_representation:
@@ -11,8 +13,6 @@ kernelspec:
   display_name: Python 3 (ipykernel)
   language: python
 ---
-
-# The α in Meijering's neuriteness filter
 
 `skimage.filters.meijering` takes an `alpha` argument, documents it as "shaping
 filter constant, that selects maximally flat elongated features", and defaults

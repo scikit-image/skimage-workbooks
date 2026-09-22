@@ -1,4 +1,6 @@
 ---
+title: On the blob detectors
+date: 2026-09-14
 jupytext:
   formats: ipynb,md:myst
   text_representation:
@@ -11,8 +13,6 @@ kernelspec:
   display_name: Python 3 (ipykernel)
   language: python
 ---
-
-# On the blob detectors
 
 `skimage.feature` offers three blob detectors — `blob_dog`, `blob_log` and
 `blob_doh` — with matching signatures and a shared output format. They are

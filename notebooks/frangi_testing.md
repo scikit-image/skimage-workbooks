@@ -1,4 +1,6 @@
 ---
+title: Testing the `frangi` repairs
+date: 2026-09-18
 jupytext:
   formats: ipynb,md:myst
   text_representation:
@@ -10,8 +12,6 @@ kernelspec:
   display_name: Python 3 (ipykernel)
   language: python
 ---
-
-# Testing the `frangi` repairs
 
 `frangi` lost its σ² scale normalisation in version 0.20.0. Before that release
 it went through a helper that multiplied the Hessian by `sigma ** 2` under the

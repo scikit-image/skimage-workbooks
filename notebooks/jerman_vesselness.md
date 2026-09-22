@@ -1,4 +1,6 @@
 ---
+title: The Jerman vesselness filter, as proposed in PR 8074
+date: 2026-09-16
 jupytext:
   formats: ipynb,md:myst
   text_representation:
@@ -11,8 +13,6 @@ kernelspec:
   display_name: Python 3 (ipykernel)
   language: python
 ---
-
-# The Jerman vesselness filter, as proposed in PR 8074
 
 [PR 8074](https://github.com/scikit-image/scikit-image/pull/8074) adds a fifth
 ridge filter, from [Jerman *et al.*

@@ -1,4 +1,6 @@
 ---
+title: Testing the one-pass Hessian
+date: 2026-09-17
 jupytext:
   formats: ipynb,md:myst
   text_representation:
@@ -11,8 +13,6 @@ kernelspec:
   display_name: Python 3 (ipykernel)
   language: python
 ---
-
-# Testing the one-pass Hessian
 
 `hessian_matrix` is to change. Today it builds each element of the Hessian with
 **two** convolution passes; the replacement uses **one** pass per element, with

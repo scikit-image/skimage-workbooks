@@ -1,4 +1,6 @@
 ---
+title: Meijering neuriteness: paper fidelity and the scale normalisation
+date: 2026-09-14
 jupytext:
   formats: ipynb,md:myst
   text_representation:
@@ -11,8 +13,6 @@ kernelspec:
   language: python
   name: python3
 ---
-
-# Meijering neuriteness: paper fidelity and the scale normalisation
 
 Meijering *et al.* (2004) define a **single-scale** neuriteness with one global
 normaliser. `skimage.filters.meijering` adds a multiscale loop and divides each

@@ -1,4 +1,6 @@
 ---
+title: On rotate
+date: 2026-09-14
 jupytext:
   text_representation:
     extension: .md
@@ -10,8 +12,6 @@ kernelspec:
   display_name: Python 3 (ipykernel)
   language: python
 ---
-
-# On rotate
 
 ```{code-cell} ipython3
 import numpy as np

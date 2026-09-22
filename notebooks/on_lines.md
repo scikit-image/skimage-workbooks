@@ -1,4 +1,6 @@
 ---
+title: On lines
+date: 2026-09-14
 jupytext:
   formats: ipynb,md:myst
   text_representation:
@@ -11,8 +13,6 @@ kernelspec:
   display_name: Python 3 (ipykernel)
   language: python
 ---
-
-# On lines
 
 How `skimage.draw.line` and `skimage.draw.line_nd` turn a line segment into
 pixels, why they disagree, how they compare with Pillow and OpenCV, and what we

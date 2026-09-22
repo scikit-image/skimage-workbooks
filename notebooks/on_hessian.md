@@ -1,4 +1,6 @@
 ---
+title: On the Hessian and the structure tensor
+date: 2026-09-14
 jupytext:
   formats: ipynb,md:myst
   text_representation:
@@ -11,8 +13,6 @@ kernelspec:
   display_name: Python 3 (ipykernel)
   language: python
 ---
-
-# On the Hessian and the structure tensor
 
 `skimage.feature.structure_tensor` and `skimage.feature.hessian_matrix` both
 take an `order` parameter, documented as choosing between two labellings of the
