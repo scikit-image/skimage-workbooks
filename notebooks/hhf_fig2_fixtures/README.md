@@ -40,32 +40,34 @@ All are 845×117, 8-bit greyscale, as printed at 365 ppi.
 
 ## Regenerate
 
-Needs poppler's `pdfimages` and a local copy of the paper under the gitignored
-`library/` symlink. Nothing in the site build needs either — the committed PNGs
-are what the notebook reads.
+`generate_fixtures.py` in this directory extracts the panels. It needs
+poppler's `pdfimages` and a copy of the accepted manuscript, which Loughborough
+University distributes under CC BY-NC-ND 4.0:
+
+<https://repository.lboro.ac.uk/articles/journal_contribution/Automatic_wrinkle_detection_using_hybrid_hessian_filter/9403112>
+
+The PDF is not committed. Nothing in the site build needs it — the committed
+PNGs are what the notebook reads.
 
 ```bash
-make fixtures SET=hhf_fig2
-# or, equivalently, from the repository root:
-python library/generate_fixtures.py hhf_fig2
+python notebooks/hhf_fig2_fixtures/generate_fixtures.py path/to/paper.pdf
 ```
 
-The generator lives in `library/` because that is where the papers are, and
-because it is useless without them; it is not part of the repository. It
-asserts each panel's shape, so it fails loudly if a different printing of the
-PDF orders its embedded images differently.
+Fig. 2 is on page 5, and its panels are the only 845x117 images on that page,
+in panel order. The script asserts that it finds exactly five, so it fails
+loudly against a different printing.
 
 ## Verify
 
-To check the committed panels against a fresh extraction, without writing
+To compare the committed panels against a fresh extraction, without writing
 anything:
 
 ```bash
-make check-fixtures
-# or: python library/generate_fixtures.py --check
+python notebooks/hhf_fig2_fixtures/generate_fixtures.py --check path/to/paper.pdf
 ```
 
-It reports, per panel, whether the pixels match and whether the file is
+It reports per panel whether the pixels match and whether the file is
 byte-identical, and exits non-zero on any pixel difference. Extraction is
-deterministic: the committed files reproduce byte-for-byte, so a mismatch
-means either the fixtures or the local copy of the paper has changed.
+deterministic in its pixels, so a pixel difference means either the fixtures or
+the PDF has changed. The bytes depend on the PNG encoder and are not expected
+to match.
