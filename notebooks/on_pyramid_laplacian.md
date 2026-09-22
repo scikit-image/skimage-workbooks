@@ -255,31 +255,61 @@ Its rows are a difference of two Gaussian-like blurs, which approximates the
 
 ## 4. The problem
 
-The forum post applies the recurrence with $N = 1$: layer $0$ of
-`pyramid_laplacian` plus `pyramid_expand` of level $1$ of `pyramid_gaussian`
-should give the image back.
+The cited paper defines the Laplacian pyramid by its inverse: expand the
+coarsest level, add the next layer, repeat, and the input comes back. A user
+of scikit-image has the pieces to try this: `pyramid_laplacian` for the
+layers, `pyramid_gaussian` for the coarsest level (since `pyramid_laplacian`
+does not return one), and `pyramid_expand` for $\mathbf{F}$. The camera image
+is 512 by 512, so every level has an even shape and `pyramid_expand` returns
+the right size at each step. `pyramid_laplacian` yields one layer per Gaussian
+level, including a 1-by-1 layer at the coarsest, so that layer is added to the
+residual before the first expansion.
 
 ```{code-cell} ipython3
 image = ski.util.img_as_float(data.camera())
 
-l0_skimage = next(pyramid_laplacian(image, max_layer=0))
-g = list(pyramid_gaussian(image, max_layer=1))
-rebuilt = l0_skimage + pyramid_expand(g[1])
+layers = list(pyramid_laplacian(image))
+residual = list(pyramid_gaussian(image))[-1]
 
-print(f"rms(rebuilt - image) = {rms(rebuilt - image):.4f}")
+# The last layer has the residual's 1x1 shape, so pair it with the residual
+# and expand from there.
+rebuilt = layers[-1] + residual
+for layer in layers[-2::-1]:
+    rebuilt = layer + pyramid_expand(rebuilt)
+
+print(f"{len(layers)} layers; last layer is {layers[-1].shape} with "
+      f"max |value| {np.abs(layers[-1]).max():.1e}")
+print(f"rms(rebuilt - image) = {rms(rebuilt - image):.3f}")
 ```
 
 ```{code-cell} ipython3
 fig, axes = plt.subplots(1, 3, figsize=(9, 3.2))
 bare(axes[0], "image").imshow(image, vmin=0, vmax=1)
-bare(axes[1], "layer 0 + expand(g_1)").imshow(rebuilt, vmin=0, vmax=1)
-bare(axes[2], "difference").imshow(rebuilt - image, cmap="RdBu_r", vmin=-0.3, vmax=0.3)
+bare(axes[1], "collapsed pyramid").imshow(rebuilt, vmin=0, vmax=1)
+bare(axes[2], "difference").imshow(rebuilt - image, cmap="RdBu_r", vmin=-0.5, vmax=0.5)
 fig.tight_layout()
 ```
 
-The rebuilt image is softer than the input, and the difference image is
-every edge of the scene. The rms difference is printed above; on a $[0, 1]$
-scale it is about a fiftieth of the range. Section 5 says where it went.
+The collapsed pyramid is not the image. It has the right mean but a fraction
+of the contrast: dark regions come back too bright and bright regions too
+dark, so the difference image is a faded copy of the scene itself. The rms
+error is a fifth of the intensity range.
+
+The forum thread tested the same promise at its smallest: one step of the
+recurrence, $\mathbf{g}_0 = \mathbf{l}_0 + \mathbf{F}\,\mathbf{g}_1$, with
+layer 0 from `pyramid_laplacian` and level 1 from `pyramid_gaussian`. That is a
+valid test, because the identity must hold at every level for the full
+collapse to work, and it fails there too.
+
+```{code-cell} ipython3
+l0_skimage = layers[0]
+g = list(pyramid_gaussian(image, max_layer=1))
+one_step = l0_skimage + pyramid_expand(g[1])
+print(f"one step, forum experiment: rms(rebuilt - image) = {rms(one_step - image):.4f}")
+```
+
+The one-step error is smaller than the full-collapse error, because only one
+layer is wrong in it. Section 5 says what the layers contain instead.
 
 ## 5. What `pyramid_laplacian` computes
 
@@ -793,7 +823,7 @@ implement. What remains is API.
 - **Every layer changes.** All layers of all inputs differ from the current
   output. Any downstream code that used the current layers as a fixed-scale
   high-pass filter will see about twice the energy per layer (section 8).
-- **Time.** The corrected pyramid runs two to three times slower on the corpus
+- **Time.** The corrected pyramid runs 1.5 to 3 times slower on the corpus
   in section 9, because it computes the Gaussian pyramid and one
   upsample-and-blur per level rather than one blur per level.
 - **Layer count** is unchanged except for an explicit `max_layer` beyond the
@@ -834,7 +864,7 @@ result to the observed extremes and so hides any offset. Compare in float.
 | Does that rebuild the input? | Yes, to $10^{-16}$, for any $\mathbf{F}$ used consistently | §6 |
 | Are PRs #8274 and #8306 correct? | Yes; same construction, exact on odd, RGB, 1-D | §12 |
 | What did they miss? | A public inverse; the `max_layer` corner case | §12 |
-| Cost of the fix | All layers change; two to three times slower | §9, §14 |
+| Cost of the fix | All layers change; 1.5 to 3 times slower | §9, §14 |
 
 ### Limits
 
