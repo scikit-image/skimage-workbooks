@@ -16,8 +16,7 @@ MYST ?= myst
 FIXTURES_DIR = notebooks/bresenham_nd_fixtures
 ZINGL_BIN = $(FIXTURES_DIR)/zingl_line3d
 
-.PHONY: help html preview book clean rm-ipynb fixtures check-fixtures \
-        library-check kernel github-pages
+.PHONY: help html preview book clean rm-ipynb kernel github-pages
 
 help:
 	@echo "make html            build the site, warnings as errors"
@@ -26,8 +25,6 @@ help:
 	@echo "make github-pages    build the site for publishing under /skimage-workbooks"
 	@echo "make kernel          register the python3 kernelspec against \$$(PYTHON)"
 	@echo "make clean           remove _build and the paired .ipynb files"
-	@echo "make fixtures        regenerate notebook fixtures from library/ papers"
-	@echo "make check-fixtures  verify committed fixtures against the papers"
 	@echo "make environment.yml regenerate the conda environment file"
 
 # Registers the "python3" kernelspec the notebooks ask for, pointing at
@@ -38,28 +35,6 @@ kernel:
 # Kept in sync with build_requirements.txt by a pre-commit hook.
 environment.yml: build_requirements.txt
 	@$(PYTHON) make_environment_yml.py $< -o $@
-
-# Regenerate notebook fixtures extracted from the reference papers under the
-# gitignored `library/` symlink (currently the Ng et al. 2014 Fig. 2 panels
-# that on_hessian_filter.md compares against). Needs poppler's `pdfimages` and
-# a local library/; the committed fixtures are what the build reads, so this is
-# a developer target. `make fixtures SET=hhf_fig2` builds just one set.
-# See each destination's README.md, and /LICENSE, for the copyright terms.
-fixtures: | library-check
-	$(PYTHON) library/generate_fixtures.py $(SET)
-
-# Verify the committed fixtures still match a fresh extraction from the
-# papers. Writes nothing; exits non-zero on any pixel difference.
-check-fixtures: | library-check
-	$(PYTHON) library/generate_fixtures.py --check $(SET)
-
-# `library/` is a gitignored symlink to the local paper collection; the
-# generator lives there because it is useless without the PDFs.
-library-check:
-	@test -f library/generate_fixtures.py || { \
-	  echo "library/generate_fixtures.py not found;" \
-	       "see notebooks/hhf_fig2_fixtures/README.md"; \
-	  exit 1; }
 
 # The Bresenham N-D fixtures need a dedicated env and build; regenerate them
 # by hand, per $(FIXTURES_DIR)/README.md.
