@@ -1,5 +1,5 @@
 ---
-title: Testing the one-pass Hessian
+title: 'Testing the one-pass Hessian'
 date: 2026-09-17
 jupytext:
   formats: ipynb,md:myst

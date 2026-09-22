@@ -71,7 +71,7 @@ file with:
 
 ```
 ---
-title: <Title Case title>
+title: '<Title Case title>'
 date: <YYYY-MM-DD, the day you write the notebook>
 options:
   updated: <YYYY-MM-DD, the day of this edit>
@@ -81,6 +81,9 @@ kernelspec:
   name: python3
 ---
 ```
+
+Quote the title. An unquoted title with a colon in it is not valid YAML, and
+MyST then reads no frontmatter at all, including `kernelspec`.
 
 `date` is the date of writing. Do not change it when you edit the notebook
 later. Set `options.updated` to the current date on every edit. MyST has no

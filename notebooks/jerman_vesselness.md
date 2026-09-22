@@ -1,5 +1,5 @@
 ---
-title: The Jerman vesselness filter, as proposed in PR 8074
+title: 'The Jerman vesselness filter, as proposed in PR 8074'
 date: 2026-09-16
 jupytext:
   formats: ipynb,md:myst

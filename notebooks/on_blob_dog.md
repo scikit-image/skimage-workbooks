@@ -1,5 +1,5 @@
 ---
-title: On the blob detectors
+title: 'On the blob detectors'
 date: 2026-09-14
 jupytext:
   formats: ipynb,md:myst

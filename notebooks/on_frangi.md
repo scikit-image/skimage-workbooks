@@ -1,5 +1,5 @@
 ---
-title: On frangi
+title: 'On frangi'
 date: 2026-09-14
 jupytext:
   formats: ipynb,md:myst

@@ -1,5 +1,5 @@
 ---
-title: On rotate
+title: 'On rotate'
 date: 2026-09-14
 jupytext:
   text_representation:

@@ -1,5 +1,5 @@
 ---
-title: On the maps you can hand to `warp`
+title: 'On the maps you can hand to `warp`'
 date: 2026-09-14
 jupytext:
   formats: ipynb,md:myst

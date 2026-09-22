@@ -1,5 +1,5 @@
 ---
-title: The α in Meijering's neuriteness filter
+title: 'The α in Meijering''s neuriteness filter'
 date: 2026-09-16
 jupytext:
   formats: ipynb,md:myst

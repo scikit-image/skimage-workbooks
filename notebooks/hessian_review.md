@@ -1,5 +1,5 @@
 ---
-title: The second derivative of a smoothed image
+title: 'The second derivative of a smoothed image'
 date: 2026-09-14
 jupytext:
   formats: ipynb,md:myst

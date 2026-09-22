@@ -1,5 +1,5 @@
 ---
-title: On the `hessian` filter
+title: 'On the `hessian` filter'
 date: 2026-09-19
 jupytext:
   formats: ipynb,md:myst

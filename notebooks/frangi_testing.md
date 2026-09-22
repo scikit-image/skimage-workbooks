@@ -1,5 +1,5 @@
 ---
-title: Testing the `frangi` repairs
+title: 'Testing the `frangi` repairs'
 date: 2026-09-18
 jupytext:
   formats: ipynb,md:myst

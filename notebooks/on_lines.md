@@ -1,5 +1,5 @@
 ---
-title: On lines
+title: 'On lines'
 date: 2026-09-14
 jupytext:
   formats: ipynb,md:myst

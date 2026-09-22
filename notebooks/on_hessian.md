@@ -1,5 +1,5 @@
 ---
-title: On the Hessian and the structure tensor
+title: 'On the Hessian and the structure tensor'
 date: 2026-09-14
 jupytext:
   formats: ipynb,md:myst

@@ -1,5 +1,5 @@
 ---
-title: N-D Bresenham: Cython, and why other libraries disagree
+title: 'N-D Bresenham: Cython, and why other libraries disagree'
 date: 2026-09-14
 jupytext:
   formats: ipynb,md:myst

@@ -1,5 +1,5 @@
 ---
-title: Testing the α in `meijering`
+title: 'Testing the α in `meijering`'
 date: 2026-09-17
 jupytext:
   formats: ipynb,md:myst
