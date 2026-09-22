@@ -53,10 +53,12 @@ fixtures: | library-check
 check-fixtures: | library-check
 	$(PYTHON) library/generate_fixtures.py --check $(SET)
 
-# `library/` is a gitignored symlink to the local paper collection.
+# `library/` is a gitignored symlink to the local paper collection; the
+# generator lives there because it is useless without the PDFs.
 library-check:
 	@test -f library/generate_fixtures.py || { \
-	  echo "library/generate_fixtures.py not found; see README.md for the library/ symlink"; \
+	  echo "library/generate_fixtures.py not found;" \
+	       "see notebooks/hhf_fig2_fixtures/README.md"; \
 	  exit 1; }
 
 # The Bresenham N-D fixtures need a dedicated env and build; regenerate them
