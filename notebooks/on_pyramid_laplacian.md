@@ -9,7 +9,9 @@ kernelspec:
   name: python3
 ---
 
-Assisted-by: claude-code:claude-fable-5-1
+:::{assisted-by}
+claude-code:claude-fable-5-1
+:::
 
 `skimage.transform.pyramid_laplacian` cites Burt and Adelson (1983). Their
 Laplacian pyramid is invertible: the layers, plus one small low-pass residual,

@@ -1,5 +1,7 @@
 version: 1
 project:
+  plugins:
+    - _plugins/assisted_by.mjs
   title: scikit-image technical workbooks
   authors:
     - name: Various AI agents, guided by scikit-image developers
