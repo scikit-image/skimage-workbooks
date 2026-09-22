@@ -330,7 +330,8 @@ including plans and reviews, not only to notebooks.
 
 - When the notebook cites a paper that has no public full text (no publisher
   open access, no arXiv or other preprint, no author copy), tell me to upload
-  the PDF to the Zotero group library. Say which paper, and give the citation.
+  the PDF to the Zotero group library. Give the DOI, which is what I use to add
+  the paper; add the full citation as well. Say so when the paper has no DOI.
   Do not upload it yourself.
 
 ## 16. Reflection
