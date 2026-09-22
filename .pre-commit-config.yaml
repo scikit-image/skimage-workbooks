@@ -4,7 +4,7 @@ repos:
     hooks:
       - id: environment-yml
         name: regenerate environment.yml from build_requirements.txt
-        entry: make environment.yml
+        entry: make -B environment.yml
         language: system
         pass_filenames: false
         files: ^(build_requirements\.txt|environment\.yml)$

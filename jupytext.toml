@@ -1,4 +1,4 @@
 # https://jupytext.readthedocs.io/en/latest/config.html
 # Pair ipynb notebooks to Myst Markdown text notebooks.
-# Kernel: python3 (env from pyenv / .python-version; see README).
+# Kernel: python3 (registered against the active env by `make kernel`).
 formats = "ipynb,md:myst"
