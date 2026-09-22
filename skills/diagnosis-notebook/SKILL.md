@@ -99,6 +99,11 @@ execute the notebook.
 With `title` in the frontmatter, do not repeat the title as a `#` heading in
 the body. Start the body sections at `##`.
 
+The first line of the body lists every agent that worked on the notebook, in
+the form of the commit tag: `Assisted-by: <harness>:<model>`, one line per
+agent, for example `Assisted-by: claude-code:claude-fable-5-1`. An agent that
+edits the notebook later adds its own line; it does not remove earlier ones.
+
 Add a new notebook to the top of the `toc` list in `myst.yml`, directly after
 `index.md`. The list is in order of creation, newest first. An edit to a
 notebook does not move it: its place follows `date`, not `options.updated`.
@@ -133,6 +138,9 @@ nothing to say.
 11. **What not to do.** The tempting wrong conclusion, and why it fails.
 12. **Summary table**, then the limits: corpus size, versions, what was not
     tested.
+13. **References.** Every paper, book, thread, issue and PR the notebook
+    cites, with full citation, DOI where one exists, and a link to a public
+    copy. See section 15 for what to report at handover.
 
 ## 8. Cells
 
@@ -331,11 +339,17 @@ including plans and reviews, not only to notebooks.
   https://www.zotero.org/groups/6683409/skimage/items. Search it for a paper
   before you look elsewhere.
 
-- When the notebook cites a paper that has no public full text (no publisher
-  open access, no arXiv or other preprint, no author copy), tell me to upload
-  the PDF to the Zotero group library. Give the DOI, which is what I use to add
-  the paper; add the full citation as well. Say so when the paper has no DOI.
-  Do not upload it yourself.
+- When you hand over the notebook, list every paper it cites with its DOI and
+  full citation, verified against Crossref. Say so when a paper has no DOI.
+  Name the scikit-image subpackage the notebook concerns (for example
+  `skimage.transform`). I use the DOI to add the paper to the Zotero library,
+  which is organized by subpackage. Suggest one Zotero tag for the entries,
+  naming the algorithm or topic (for example "Laplacian pyramid"). Print the
+  library URL with the list: https://www.zotero.org/groups/6683409/skimage/items.
+
+- When a cited paper has no public full text (no publisher open access, no
+  arXiv or other preprint, no author copy), also tell me to upload the PDF to
+  the Zotero group library. Do not upload it yourself.
 
 ## 16. Reflection
 
