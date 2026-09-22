@@ -4,9 +4,9 @@ project:
   authors:
     - name: Various AI agents, guided by scikit-image developers
   github: https://github.com/scikit-image/skimage-workbooks
-  output_matplotlib_strings: remove
   toc:
     - file: index.md
+    - file: notebooks/on_pyramid_laplacian.md
     - file: notebooks/on_hessian_filter.md
     - file: notebooks/frangi_testing.md
     - file: notebooks/hessian_testing.md
@@ -22,5 +22,7 @@ project:
     - file: notebooks/hessian_review.md
     - file: notebooks/on_lines.md
     - file: notebooks/bresenham_nd_cython.md
+  settings:
+    output_matplotlib_strings: remove
 site:
   template: book-theme
