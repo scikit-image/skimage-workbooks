@@ -61,18 +61,20 @@ Only if none exists, write `jupytext.yaml` in the output directory:
 formats: ipynb,md:myst
 ```
 
-## 6. Name and frontmatter
+## 6. Name, frontmatter and table of contents
 
-Name the file `on_<topic>.md`: lower case, underscores, no date. Start it with:
+Name the file `on_<topic>.md`: lower case, underscores, no date.
+
+The notebook is a MyST Markdown document (https://mystmd.org), so its
+frontmatter carries the MyST fields as well as the notebook metadata. Start the
+file with:
 
 ```
 ---
-jupytext:
-  formats: ipynb,md:myst
-  text_representation:
-    extension: .md
-    format_name: myst
-    format_version: 0.13
+title: <Title Case title>
+date: <YYYY-MM-DD, the day you write the notebook>
+options:
+  updated: <YYYY-MM-DD, the day of this edit>
 kernelspec:
   display_name: Python 3 (ipykernel)
   language: python
@@ -80,8 +82,23 @@ kernelspec:
 ---
 ```
 
-Jupytext rewrites this block when the notebook is opened, so do not fight its
-formatting.
+`date` is the date of writing. Do not change it when you edit the notebook
+later. Set `options.updated` to the current date on every edit. MyST has no
+standard modification-date field, so `updated` goes under `options`, which
+takes arbitrary keys. No template renders it; it is there for the reader of
+the source.
+
+The repository `jupytext.toml` sets `formats = "ipynb,md:myst"`, so a per-file
+`jupytext:` block is not needed. Jupytext adds one back when it writes the file
+from a paired `.ipynb`; leave what it writes alone. `kernelspec` is needed to
+execute the notebook.
+
+With `title` in the frontmatter, do not repeat the title as a `#` heading in
+the body. Start the body sections at `##`.
+
+Add a new notebook to the top of the `toc` list in `myst.yml`, directly after
+`index.md`. The list is in order of creation, newest first. An edit to a
+notebook does not move it: its place follows `date`, not `options.updated`.
 
 ## 7. Shape
 
@@ -299,13 +316,22 @@ fourth classes. Run the audit to raise the floor, not to skip the review.
 Rules 5, 6 and 7 apply to any document that mixes measurement with explanation,
 including plans and reviews, not only to notebooks.
 
-## 15. Look for reference papers in `library`
+## 15. Reference papers
 
 - `library` is a symlink that may point to local, private copies of the
   reference papers, describing implementations.  Look there for relevant
   papers, but do not copy significant text content from those papers, which
   have specific copyright.  You can reproduce equations, and short quotes, but
   nothing longer than that.  Do not reproduce figures.
+
+- The team keeps shared PDFs in the Zotero group library:
+  https://www.zotero.org/groups/6683409/skimage/items. Search it for a paper
+  before you look elsewhere.
+
+- When the notebook cites a paper that has no public full text (no publisher
+  open access, no arXiv or other preprint, no author copy), tell me to upload
+  the PDF to the Zotero group library. Say which paper, and give the citation.
+  Do not upload it yourself.
 
 ## 16. Reflection
 
