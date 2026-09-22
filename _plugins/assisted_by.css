@@ -1,0 +1,25 @@
+/* Styling for the `assisted-by` directive (_plugins/assisted_by.mjs). The book
+   theme toggles a `dark` class on <html>; the media query covers pages that
+   only follow the system setting. */
+.assisted-by {
+  display: inline-block;
+  margin: 0 0 1.5em 0;
+  padding: 0.5em 0.9em;
+  border-radius: 6px;
+  font-size: 0.85em;
+  background: #eaf3fc;
+  border: 1px solid #c5dcf3;
+  color: #2b3a4a;
+}
+.assisted-by .ab-title { font-weight: 600; margin: 0 0 0.3em 0; }
+.assisted-by table { border-collapse: collapse; margin: 0; }
+.assisted-by th { text-align: left; padding: 0.1em 1.2em 0.1em 0; font-weight: 500; color: #52514e; }
+.assisted-by td { padding: 0.1em 1.2em 0.1em 0; font-family: monospace; }
+.assisted-by td.ab-note { font-family: inherit; padding-right: 0; }
+
+html.dark .assisted-by { background: #1c2a3a; border-color: #2f4560; color: #d6e2f0; }
+html.dark .assisted-by th { color: #a9b8c9; }
+@media (prefers-color-scheme: dark) {
+  html:not(.light) .assisted-by { background: #1c2a3a; border-color: #2f4560; color: #d6e2f0; }
+  html:not(.light) .assisted-by th { color: #a9b8c9; }
+}

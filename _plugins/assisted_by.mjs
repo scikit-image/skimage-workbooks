@@ -24,17 +24,7 @@ function parseLine(line) {
   return { harness: tag.slice(0, i), model: tag.slice(i + 1), note: rest.join(' ') };
 }
 
-const style = {
-  box:
-    'display:inline-block;margin:0 0 1.5em 0;padding:0.5em 0.9em;' +
-    'background:#eaf3fc;border:1px solid #c5dcf3;border-radius:6px;' +
-    'font-size:0.85em;color:#2b3a4a;',
-  title: 'font-weight:600;margin:0 0 0.3em 0;',
-  table: 'border-collapse:collapse;margin:0;',
-  th: 'text-align:left;padding:0.1em 1.2em 0.1em 0;font-weight:500;color:#52514e;',
-  td: 'padding:0.1em 1.2em 0.1em 0;font-family:monospace;',
-  note: 'padding:0.1em 0;font-family:inherit;',
-};
+// Styling lives in _plugins/assisted_by.css, loaded via site.options.style.
 
 const assistedBy = {
   name: 'assisted-by',
@@ -52,22 +42,19 @@ const assistedBy = {
       .map(parseLine);
     const hasNote = rows.some((r) => r.note);
     const head =
-      `<tr><th style="${style.th}">Harness</th><th style="${style.th}">Model</th>` +
-      (hasNote ? `<th style="${style.th}">Note</th>` : '') +
-      '</tr>';
+      '<tr><th>Harness</th><th>Model</th>' + (hasNote ? '<th>Note</th>' : '') + '</tr>';
     const body = rows
       .map(
         (r) =>
-          `<tr><td style="${style.td}">${escapeHtml(r.harness)}</td>` +
-          `<td style="${style.td}">${escapeHtml(r.model)}</td>` +
-          (hasNote ? `<td style="${style.note}">${escapeHtml(r.note)}</td>` : '') +
+          `<tr><td>${escapeHtml(r.harness)}</td><td>${escapeHtml(r.model)}</td>` +
+          (hasNote ? `<td class="ab-note">${escapeHtml(r.note)}</td>` : '') +
           '</tr>',
       )
       .join('');
     const html =
-      `<div class="assisted-by" style="${style.box}">` +
-      `<div style="${style.title}">Assisted by</div>` +
-      `<table style="${style.table}">${head}${body}</table></div>`;
+      '<div class="assisted-by">' +
+      '<div class="ab-title">Assisted by</div>' +
+      `<table>${head}${body}</table></div>`;
     return [{ type: 'html', value: html }];
   },
 };

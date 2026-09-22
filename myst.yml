@@ -28,3 +28,5 @@ project:
     output_matplotlib_strings: remove
 site:
   template: book-theme
+  options:
+    style: _plugins/assisted_by.css
