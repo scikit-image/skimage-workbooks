@@ -1,6 +1,8 @@
 ---
 title: 'On the Hessian and the structure tensor'
 date: 2026-09-14
+options:
+  updated: 2026-09-22
 jupytext:
   formats: ipynb,md:myst
   text_representation:
@@ -165,8 +167,8 @@ It applies two successive **first**-order passes rather than one second-order
 pass, and each pass uses `sigma / sqrt(2)`. For continuous Gaussians, two
 Gaussians of that width compose to a Gaussian of width `sigma`. SciPy uses
 sampled and truncated kernels, so this is the continuous target, not an exact
-discrete identity; [Lindeberg (1993)](../library/lindeberg1993discrete_scale_space.pdf)
-and [Lindeberg (2023)](../library/lindeberg2023gaussian_discretisations.pdf)
+discrete identity; [Lindeberg (1993)](https://people.kth.se/~tony/papers/disc-der-approx-Njet.jmiv93.pdf)
+and [Lindeberg (2024)](https://link.springer.com/article/10.1007/s10851-024-01196-9)
 describe the loss of the semigroup property for sampled Gaussians, especially
 at fine scales.
 
@@ -235,8 +237,8 @@ for sigma, a, b in zip(sigmas, finite, gaussian_deriv):
 For this blob, interior crop, and list of tested scales, the Gaussian-derivative
 route reaches floating-point agreement above `sigma = 1`, while finite
 differences stay wrong by a few percent. This is a measurement of this test,
-not a general exactness claim. [Lindeberg's 2023 discretization
-study](../library/lindeberg2023gaussian_discretisations.pdf) reports
+not a general exactness claim. [Lindeberg's 2024 discretization
+study](https://link.springer.com/article/10.1007/s10851-024-01196-9) reports
 that sampled Gaussian derivatives are usually accurate above about one pixel,
 but that the threshold depends on derivative order and task. Below about
 `sigma = 0.85` they swap places here, and the Gaussian route degrades sharply:
