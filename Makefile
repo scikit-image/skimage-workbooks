@@ -19,10 +19,11 @@ BUILD_DIR = _build/html
 FIXTURES_DIR = notebooks/bresenham_nd_fixtures
 ZINGL_BIN = $(FIXTURES_DIR)/zingl_line3d
 
-.PHONY: help html book clean rm-ipynb bresenham-fixtures fixtures check-fixtures kernel
+.PHONY: help html preview book clean rm-ipynb bresenham-fixtures fixtures check-fixtures kernel
 
 help:
 	@echo "make html      build the site, warnings as errors"
+	@echo "make preview   live preview on localhost:3000, executing notebooks"
 	@echo "make clean     remove _build and the paired .ipynb files"
 	@echo "make bresenham-fixtures   regenerate bresenham_nd_fixtures/*.json"
 	@echo "make fixtures        regenerate notebook fixtures from library/ papers"
@@ -61,6 +62,14 @@ html: kernel $(ZINGL_BIN)
 	if compgen -G "notebooks/*.ipynb" 2> /dev/null; then \
 	  (echo "ipynb files" && exit 1); fi
 	$(MYST) build --html --strict --execute
+
+# Live preview, rebuilding a page when it changes. Same prerequisites as
+# `html`: the python3 kernelspec the notebooks ask for, and the binary
+# bresenham_nd_cython.md shells out to. `myst start` reads PORT from the
+# environment, so `PORT=8000 make preview` moves it off 3000. Drop --execute
+# for a faster pass over prose and layout only.
+preview: kernel $(ZINGL_BIN)
+	$(MYST) start --execute
 
 github-pages:
 	@BASE_URL=/skimage-workbooks $(MAKE) html

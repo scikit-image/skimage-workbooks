@@ -1,4 +1,4 @@
---
+---
 title: 'On the `hessian` filter'
 date: 2026-09-19
 jupytext:
@@ -14,7 +14,7 @@ kernelspec:
 ---
 
 `skimage.filters.hessian` calls `frangi`, then sets every non-positive pixel
-to \1. The docstring calls the result a filtered image and cites the Hybrid
+to 1. The docstring calls the result a filtered image and cites the Hybrid
 Hessian Filter of [Ng, Yap, Costen and Li
 (2014)](https://doi.org/10.1007/978-3-319-16811-1_40).
 
