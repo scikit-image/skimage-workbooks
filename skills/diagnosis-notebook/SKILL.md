@@ -149,7 +149,20 @@ nothing to say.
     tested.
 13. **References.** Every paper, book, thread, issue and PR the notebook
     cites, with full citation, DOI where one exists, and a link to a public
-    copy. See section 15 for what to report at handover.
+    copy. See section 15 for what to report at handover. Keep the entries in
+    `notebooks/<name>.bib` and list that file under `bibliography:` in the
+    notebook's frontmatter. Cite in the text with `[@key]`. Do not write a
+    "References" section: MyST generates the only one. Never link to
+    `doi.org` or use `doi:` links outside the `.bib` file, because MyST would
+    add a second generated "References" block.
+    MyST shows a `doi` or a `url`, never both, and drops `note`. To show the
+    DOI and a public copy together, omit `doi` and set `url` to the public
+    copy: an author copy or an arXiv preprint. MyST reads a publisher URL
+    that ends in the DOI as a DOI. Put the DOI in `type` as
+    `type = {DOI 10.xxxx/yyyy}`, which MyST prints in brackets after the
+    title. An entry with no public copy keeps its `doi` field. Give every
+    entry a `year`; without one the list shows "n.d.". Give issues, PRs and
+    forum threads an `@misc` entry with `author`, `title`, `year` and `url`.
 
 ## 8. Cells
 
