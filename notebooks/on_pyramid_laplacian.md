@@ -3,6 +3,8 @@ title: 'On the Laplacian pyramid'
 date: 2026-09-22
 options:
   updated: 2026-09-22
+bibliography:
+  - on_pyramid_laplacian.bib
 kernelspec:
   display_name: Python 3 (ipykernel)
   language: python
@@ -13,17 +15,17 @@ kernelspec:
 claude-code:claude-fable-5-1
 :::
 
-`skimage.transform.pyramid_laplacian` cites Burt and Adelson (1983). Their
+`skimage.transform.pyramid_laplacian` cites Burt and Adelson [@burt1983]. Their
 Laplacian pyramid is invertible: the layers, plus one small low-pass residual,
 rebuild the input exactly. A user report on the image.sc forum
-([Elena Pascal, 2025](https://forum.image.sc/t/unclarity-about-laplacian-pyramid-transform/115976))
+[@pascal2025]
 shows that the scikit-image pyramid does not rebuild the input. This notebook
 shows what the function computes instead, why that breaks reconstruction, what
 the correct construction is, and whether the two pull requests that tried to fix
 it are correct.
 
 Notation follows Torralba, Isola and Freeman, *Foundations of Computer Vision*,
-chapter 23 (reference at the end). $\mathbf{g}_k$ is level $k$ of the Gaussian
+chapter 23 [@torralba2024]. $\mathbf{g}_k$ is level $k$ of the Gaussian
 pyramid, $\mathbf{l}_k$ is level $k$ of the Laplacian pyramid, and bold capitals
 are linear operators. Arrays are in `(row, column)` order.
 
@@ -886,24 +888,3 @@ result to the observed extremes and so hides any offset. Compare in float.
   installed.
 - The choice of $\mathbf{F}$ affects how well each layer isolates one octave.
   This notebook tests only invertibility, not band separation.
-
-## References
-
-- P. J. Burt and E. H. Adelson, "The Laplacian Pyramid as a Compact Image
-  Code," *IEEE Transactions on Communications*, vol. COM-31, no. 4,
-  pp. 532–540, April 1983.
-  [doi:10.1109/TCOM.1983.1095851](https://doi.org/10.1109/TCOM.1983.1095851).
-  Author copy: <http://persci.mit.edu/pub_pdfs/pyramid83.pdf>.
-- A. Torralba, P. Isola and W. T. Freeman, *Foundations of Computer Vision*,
-  Adaptive Computation and Machine Learning series, The MIT Press, Cambridge,
-  MA, 2024. ISBN 9780262378666. Chapter 23, "Image Pyramids":
-  <https://visionbook.mit.edu/pyramids_new_notation.html>.
-- E. Pascal et al., "Unclarity about Laplacian pyramid transform," image.sc
-  forum, 2025.
-  <https://forum.image.sc/t/unclarity-about-laplacian-pyramid-transform/115976>.
-- scikit-image issues [#7921](https://github.com/scikit-image/scikit-image/issues/7921)
-  and [#8007](https://github.com/scikit-image/scikit-image/issues/8007);
-  pull requests [#8274](https://github.com/scikit-image/scikit-image/pull/8274)
-  and [#8306](https://github.com/scikit-image/scikit-image/pull/8306).
-- Wikipedia, [Pyramid (image processing)](https://en.wikipedia.org/wiki/Pyramid_(image_processing))
-  and [Difference of Gaussians](https://en.wikipedia.org/wiki/Difference_of_Gaussians).

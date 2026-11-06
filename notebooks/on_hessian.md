@@ -10,6 +10,8 @@ jupytext:
     format_name: myst
     format_version: 0.13
     jupytext_version: 1.19.5
+bibliography:
+  - on_hessian.bib
 kernelspec:
   name: python3
   display_name: Python 3 (ipykernel)
@@ -167,8 +169,7 @@ It applies two successive **first**-order passes rather than one second-order
 pass, and each pass uses `sigma / sqrt(2)`. For continuous Gaussians, two
 Gaussians of that width compose to a Gaussian of width `sigma`. SciPy uses
 sampled and truncated kernels, so this is the continuous target, not an exact
-discrete identity; [Lindeberg (1993)](https://people.kth.se/~tony/papers/disc-der-approx-Njet.jmiv93.pdf)
-and [Lindeberg (2024)](https://link.springer.com/article/10.1007/s10851-024-01196-9)
+discrete identity; Lindeberg [@lindeberg1993; @lindeberg2024]
 describe the loss of the semigroup property for sampled Gaussians, especially
 at fine scales.
 
@@ -237,8 +238,8 @@ for sigma, a, b in zip(sigmas, finite, gaussian_deriv):
 For this blob, interior crop, and list of tested scales, the Gaussian-derivative
 route reaches floating-point agreement above `sigma = 1`, while finite
 differences stay wrong by a few percent. This is a measurement of this test,
-not a general exactness claim. [Lindeberg's 2024 discretization
-study](https://link.springer.com/article/10.1007/s10851-024-01196-9) reports
+not a general exactness claim. Lindeberg's 2024 discretization
+study [@lindeberg2024] reports
 that sampled Gaussian derivatives are usually accurate above about one pixel,
 but that the threshold depends on derivative order and task. Below about
 `sigma = 0.85` they swap places here, and the Gaussian route degrades sharply:
@@ -1669,7 +1670,7 @@ avoid needing it, and they disagree about which.
 **DIPlib does exactly what Fix C does, and said so in the page `corner.py`
 cites.** The comment in `_hessian_matrix_with_gaussian` points at a Signal
 Processing Stack Exchange question,
-[*Are scipy second-order Gaussian derivatives correct?*](https://dsp.stackexchange.com/questions/78280/are-scipy-second-order-gaussian-derivatives-correct).
+*Are scipy second-order Gaussian derivatives correct?* [@dspse78280].
 The question is this defect, found from the other end: the asker takes an image
 constant down every column, asks scipy for the second derivative *along* that
 constant direction, and gets `1e-5` where zero is the only right answer. That is
@@ -1809,7 +1810,7 @@ call re-extends a boundary the first has already smoothed. Fix C pays it back by
 repairing the kernel rather than avoiding it.
 
 The area has open, unresolved reports.
-[#6451](https://github.com/scikit-image/scikit-image/issues/6451) observes that
+Issue #6451 [@skimage6451] observes that
 the two `use_gaussian_derivatives` paths differ by about a factor of two and has
 been dormant since 2022; it is a different symptom, and section 3's accuracy
 comparison is the closest thing here to an answer.
@@ -2366,31 +2367,3 @@ today, border artefact included. Fixes A and C in section 10 change that border
 deliberately, so a caller cannot have both the old numbers and the corrected
 ones. The shim is for callers who need bit-compatibility during a migration; it
 is not a recommendation to keep computing the old values.
-
-+++
-
-## 13. References
-
-Lindeberg, T. (1993). Discrete derivative approximations with scale-space
-properties: A basis for low-level feature extraction. *Journal of Mathematical
-Imaging and Vision*, 3(4), 349–376.
-DOI: [10.1007/BF01664794](https://doi.org/10.1007/BF01664794).
-Author's copy:
-<https://people.kth.se/~tony/papers/disc-der-approx-Njet.jmiv93.pdf>.
-
-Lindeberg, T. (2024). Discrete approximations of Gaussian smoothing and
-Gaussian derivatives. *Journal of Mathematical Imaging and Vision*, 66(5),
-759–800.
-DOI: [10.1007/s10851-024-01196-9](https://doi.org/10.1007/s10851-024-01196-9).
-Open access under CC BY 4.0. Preprint:
-[arXiv:2311.11317](https://arxiv.org/abs/2311.11317).
-
-scikit-image issue #6451, *One of
-hessian_matrix(use_gaussian_derivative=True/False) seems to be off by a factor
-of 2* (2022-07-25, open):
-<https://github.com/scikit-image/scikit-image/issues/6451>.
-
-Signal Processing Stack Exchange, *Are scipy second-order Gaussian derivatives
-correct?*:
-<https://dsp.stackexchange.com/questions/78280/are-scipy-second-order-gaussian-derivatives-correct>.
-The accepted answer is by an author of DIPlib, <https://diplib.org>.
