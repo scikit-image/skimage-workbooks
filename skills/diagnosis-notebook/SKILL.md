@@ -156,7 +156,7 @@ the `Assisted-by` tags as `who`.
 
 Add a new notebook to the top of the `toc` list in `myst.yml`, directly after
 `index.md`. The list is in order of creation, newest first. An edit to a
-notebook does not move it: its place follows `date`, not `options.updated`.
+notebook does not move it: its place follows `date`, not the latest changelog entry.
 
 ## 7. Shape
 
