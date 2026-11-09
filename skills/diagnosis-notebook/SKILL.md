@@ -73,8 +73,6 @@ file with:
 ---
 title: '<Title Case title>'
 date: <YYYY-MM-DD, the day you write the notebook>
-options:
-  updated: <YYYY-MM-DD, the day of this edit>
 kernelspec:
   display_name: Python 3 (ipykernel)
   language: python
@@ -86,10 +84,8 @@ Quote the title. An unquoted title with a colon in it is not valid YAML, and
 MyST then reads no frontmatter at all, including `kernelspec`.
 
 `date` is the date of writing. Do not change it when you edit the notebook
-later. Set `options.updated` to the current date on every edit. MyST has no
-standard modification-date field, so `updated` goes under `options`, which
-takes arbitrary keys. No template renders it; it is there for the reader of
-the source.
+later. The changelog (below) records later edits. Do not add
+`options.updated`; remove it from a notebook that has it.
 
 The repository `jupytext.toml` sets `formats = "ipynb,md:myst"`, so a per-file
 `jupytext:` block is not needed. Jupytext adds one back when it writes the file
@@ -99,19 +95,64 @@ execute the notebook.
 With `title` in the frontmatter, do not repeat the title as a `#` heading in
 the body. Start the body sections at `##`.
 
-The body starts with an `assisted-by` block listing every agent that worked
-on the notebook, one per line in the commit-tag form `<harness>:<model>`, with
-an optional note after the tag:
+The body starts with two directives, `related` and then `changelog`.
+`_plugins/workbook_meta.mjs` defines them and renders each as a small table.
+Each body line holds fields separated by ` | `. The last field is MyST
+Markdown, so it can hold links and cross-references.
 
 ```
-:::{assisted-by}
-claude-code:claude-fable-5-1
+:::{related}
+https://github.com/scikit-image/scikit-image/pull/7890#issuecomment-123 | Asks why the border is reflected; answered in [§5](#sec-border)
+https://forum.image.sc/t/some-thread/115976 | User report of the defect
+:::
+
+:::{changelog}
+2026-11-09 | claude-code:claude-opus-5-5 | Add explanation of per-pixel Hessian
+2026-10-02 | Jane Doe | Correct the corpus size in §9
+2026-09-22 | claude-code:claude-fable-5-1 | Create workbook
 :::
 ```
 
-The directive is defined in `_plugins/assisted_by.mjs` and renders the list as
-a small table. An agent that edits the notebook later adds its own line; it
-does not remove earlier ones.
+### Related
+
+One line per pull request, issue, discussion, forum thread, or comment that
+the notebook concerns: `<url> | <note>`. Link to the comment, not the thread,
+when one comment asks the question. The note says what the link is and where
+the notebook answers it, with a cross-reference to the section. Put a label
+such as `(sec-border)=` on the line before that section heading. The directive
+shortens GitHub URLs to labels such as `scikit-image#7890 PR, comment`. Omit `related`
+when there are no links.
+
+Add a line when the user points to a PR, issue, or comment, and when the
+notebook answers a question asked there. The `related` block lists links.
+The `.bib` file (section 7, item 13) holds citations. A thread can be in both.
+
+### Changelog
+
+One line per change that reaches `main`: `<date> | <who> | <comment>`,
+newest first.
+
+- `date` is `YYYY-MM-DD`, the day of the last change in the entry.
+- `who` is `<harness>:<model>` for an agent, the same form as the
+  `Assisted-by` commit tag. For a change made by hand, it is the author's
+  name. Separate more than one contributor with commas.
+- `comment` says what changed, in the imperative, as a commit subject:
+  "Create workbook", "Add explanation of per-pixel Hessian". Do not describe
+  how the change was made.
+
+One push to `main` gives one entry. Before you edit the changelog, run
+`git log origin/main..HEAD -- <notebook>`. If it lists commits, the top
+entry describes changes that are not on `main` yet. Do not add a new entry.
+Change the top entry: set its date to today, add your tag to `who` if it is
+not there, and rewrite `comment` to summarize all of the unpushed changes in
+one line. If it lists no commits, add a new entry at the top.
+
+An entry for a change that does not alter what the notebook says, such as a
+format fix, is optional.
+
+When you edit a notebook that has no changelog, add one. Fill it from
+`git log --follow -- <notebook>`, with one entry for each day of commits and
+the `Assisted-by` tags as `who`.
 
 Add a new notebook to the top of the `toc` list in `myst.yml`, directly after
 `index.md`. The list is in order of creation, newest first. An edit to a

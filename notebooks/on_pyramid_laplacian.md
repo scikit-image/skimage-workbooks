@@ -1,8 +1,6 @@
 ---
 title: 'On the Laplacian pyramid'
 date: 2026-09-22
-options:
-  updated: 2026-09-22
 bibliography:
   - on_pyramid_laplacian.bib
 kernelspec:
@@ -11,8 +9,16 @@ kernelspec:
   name: python3
 ---
 
-:::{assisted-by}
-claude-code:claude-fable-5-1
+:::{related}
+https://forum.image.sc/t/unclarity-about-laplacian-pyramid-transform/115976 | User report: the pyramid does not rebuild the input
+https://github.com/scikit-image/scikit-image/pull/8274 | Proposed fix, closed; checked in [§12](#sec-pull-requests)
+https://github.com/scikit-image/scikit-image/pull/8306 | Proposed fix, closed; checked in [§12](#sec-pull-requests)
+:::
+
+:::{changelog}
+2026-11-09 | claude-code:claude-opus-5-5 | Replace the assisted-by block with related links and a changelog
+2026-11-06 | claude-code:claude-sonnet-5-5 | Move references to a `.bib` file
+2026-09-22 | claude-code:claude-fable-5-1 | Create workbook
 :::
 
 `skimage.transform.pyramid_laplacian` cites Burt and Adelson [@burt1983]. Their
@@ -711,6 +717,7 @@ cv_layers = cv_pyramid(image.astype(np.float32))
 print(f"OpenCV (float32) reconstruction, max |err| = {np.abs(cv_collapse(cv_layers) - image).max():.1e}")
 ```
 
+(sec-pull-requests)=
 ## 12. The two pull requests
 
 Two pull requests proposed the same change and both were closed by their
