@@ -22,6 +22,16 @@
 }
 .wb-meta th { font-weight: 500; color: #52514e; }
 .wb-meta td:first-child { white-space: nowrap; }
+.wb-meta.wb-changelog { margin: 0 0 1em 0; box-shadow: none; }
+.wb-meta.wb-changelog > summary {
+  font-size: inherit;
+  font-weight: 600;
+  background: none;
+  box-shadow: none;
+  min-height: 0;
+  padding: 0;
+}
+.wb-meta.wb-changelog[open] > summary { margin-bottom: 0.3em; }
 
 html.dark .wb-meta { background: #1c2a3a; border-color: #2f4560; color: #d6e2f0; }
 html.dark .wb-meta th { color: #a9b8c9; }

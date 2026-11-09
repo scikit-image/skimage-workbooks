@@ -38,6 +38,16 @@ function inline(ctx, text) {
 const cell = (children, header = false) => ({ type: 'tableCell', header, children });
 const text = (value) => ({ type: 'text', value });
 
+function table(headers, rows) {
+  return {
+    type: 'table',
+    children: [
+      { type: 'tableRow', children: headers.map((h) => cell([text(h)], true)) },
+      ...rows.map((r) => ({ type: 'tableRow', children: r.map((c) => cell(c)) })),
+    ],
+  };
+}
+
 function box(cls, title, headers, rows) {
   return [
     {
@@ -45,14 +55,20 @@ function box(cls, title, headers, rows) {
       class: `wb-meta ${cls}`,
       children: [
         { type: 'paragraph', class: 'wb-meta-title', children: [text(title)] },
-        {
-          type: 'table',
-          children: [
-            { type: 'tableRow', children: headers.map((h) => cell([text(h)], true)) },
-            ...rows.map((r) => ({ type: 'tableRow', children: r.map((c) => cell(c)) })),
-          ],
-        },
+        table(headers, rows),
       ],
+    },
+  ];
+}
+
+// Like `box`, but collapsed: only the title line shows until opened.
+function collapsedBox(cls, title, headers, rows) {
+  return [
+    {
+      type: 'details',
+      class: `wb-meta ${cls}`,
+      open: false,
+      children: [{ type: 'summary', children: [text(title)] }, table(headers, rows)],
     },
   ];
 }
@@ -101,7 +117,13 @@ const changelog = {
         ]);
       return [[text(date)], whoNodes, inline(ctx, comment)];
     });
-    return box('wb-changelog', 'Changelog', ['Date', 'By', 'Change'], rows);
+    const latest = rows[0][0][0].value;
+    return collapsedBox(
+      'wb-changelog',
+      `Changelog (last change ${latest})`,
+      ['Date', 'By', 'Change'],
+      rows,
+    );
   },
 };
 

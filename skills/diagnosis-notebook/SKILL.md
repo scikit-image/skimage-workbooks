@@ -131,6 +131,8 @@ The `.bib` file (section 7, item 13) holds citations. A thread can be in both.
 
 One line per change that reaches `main`: `<date> | <who> | <comment>`,
 newest first.
+The changelog renders collapsed, with the date of the newest entry in its
+title.
 
 - `date` is `YYYY-MM-DD`, the day of the last change in the entry.
 - `who` is `<harness>:<model>` for an agent, the same form as the
@@ -141,8 +143,10 @@ newest first.
   how the change was made.
 
 One push to `main` gives one entry. Before you edit the changelog, run
-`git log origin/main..HEAD -- <notebook>`. If it lists commits, the top
-entry describes changes that are not on `main` yet. Do not add a new entry.
+`git fetch origin main`, then `git log origin/main..HEAD -- <notebook>`.
+Compare against the remote `main`, never the local `main`, which can be out
+of date. If the log lists commits, the top entry describes changes that are
+not on `main` yet. Do not add a new entry.
 Change the top entry: set its date to today, add your tag to `who` if it is
 not there, and rewrite `comment` to summarize all of the unpushed changes in
 one line. If it lists no commits, add a new entry at the top.

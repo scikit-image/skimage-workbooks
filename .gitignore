@@ -31,3 +31,6 @@ notebooks/bresenham_nd_fixtures/zingl_line3d
 *.ipynb
 
 .vscode/
+
+# Git worktrees for feature branches.
+worktrees/
