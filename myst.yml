@@ -1,7 +1,7 @@
 version: 1
 project:
   plugins:
-    - _plugins/assisted_by.mjs
+    - _plugins/workbook_meta.mjs
   title: scikit-image technical workbooks
   authors:
     - name: Various AI agents, guided by scikit-image developers
@@ -29,4 +29,4 @@ project:
 site:
   template: book-theme
   options:
-    style: _plugins/assisted_by.css
+    style: _plugins/workbook_meta.css

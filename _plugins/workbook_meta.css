@@ -1,0 +1,41 @@
+/* Styling for the `related` and `changelog` directives
+   (_plugins/workbook_meta.mjs). The book theme toggles a `dark` class on
+   <html>; the media query covers pages that only follow the system setting. */
+.wb-meta {
+  margin: 0 0 1em 0;
+  padding: 0.5em 0.9em;
+  border-radius: 6px;
+  font-size: 0.85em;
+  background: #eaf3fc;
+  border: 1px solid #c5dcf3;
+  color: #2b3a4a;
+}
+.wb-meta .wb-meta-title { font-weight: 600; margin: 0 0 0.3em 0; }
+.wb-meta table { border-collapse: collapse; margin: 0; width: auto; }
+.wb-meta th,
+.wb-meta td {
+  text-align: left;
+  vertical-align: top;
+  border: none;
+  padding: 0.1em 1.2em 0.1em 0;
+  background: none;
+}
+.wb-meta th { font-weight: 500; color: #52514e; }
+.wb-meta td:first-child { white-space: nowrap; }
+.wb-meta.wb-changelog { margin: 0 0 1em 0; box-shadow: none; }
+.wb-meta.wb-changelog > summary {
+  font-size: inherit;
+  font-weight: 600;
+  background: none;
+  box-shadow: none;
+  min-height: 0;
+  padding: 0;
+}
+.wb-meta.wb-changelog[open] > summary { margin-bottom: 0.3em; }
+
+html.dark .wb-meta { background: #1c2a3a; border-color: #2f4560; color: #d6e2f0; }
+html.dark .wb-meta th { color: #a9b8c9; }
+@media (prefers-color-scheme: dark) {
+  html:not(.light) .wb-meta { background: #1c2a3a; border-color: #2f4560; color: #d6e2f0; }
+  html:not(.light) .wb-meta th { color: #a9b8c9; }
+}
