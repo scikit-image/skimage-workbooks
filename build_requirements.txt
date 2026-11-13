@@ -1,5 +1,5 @@
 # Build requirements for the scikit-image technical workbooks.
-mystmd
+mystmd==1.13.0
 ipykernel
 jupyter-server
 jupytext

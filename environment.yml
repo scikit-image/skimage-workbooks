@@ -3,7 +3,7 @@ channels:
   - conda-forge
 dependencies:
   - python
-  - mystmd
+  - mystmd==1.13.0
   - ipykernel
   - jupyter-server
   - jupytext
