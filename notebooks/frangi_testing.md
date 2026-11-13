@@ -13,6 +13,12 @@ kernelspec:
   language: python
 ---
 
+:::{changelog}
+2026-11-13 | claude-code:claude-opus-5-5 | Add 1D illustration of scale normalisation on Gaussian bars
+2026-09-22 | Stefan van der Walt, claude-code:claude-opus-5 | Add title and creation date; quote title
+2026-09-18 | Matthew Brett | Create workbook
+:::
+
 `frangi` lost its σ² scale normalisation in version 0.20.0. Before that release
 it went through a helper that multiplied the Hessian by `sigma ** 2` under the
 comment `# Correct for scale`; the rewrite that removed the helper kept that
@@ -79,6 +85,295 @@ def recede(ax, title=None):
         ax.set_title(title)
     return ax
 ```
+
+(sec-smoothing-1d)=
+## 0. Smoothing and scale, in one dimension
+
+Before the candidates, a picture of what the σ² is for. A ridge filter finds a
+bar by its curvature: the second derivative of the image after Gaussian
+smoothing at scale $\sigma$. Smoothing makes a bar lower and wider, and both
+changes reduce the curvature at its centre. So a larger $\sigma$ always gives
+a smaller raw curvature, and the raw numbers cannot tell us which scale fits a
+bar.
+
+To show this, we use three bright bars in one dimension, with Gaussian profiles
+like those of the bars in §2. Each has height 1. Its width $w$ is the standard
+deviation of the profile, and we use $w$ = 2, 4 and 8 pixels. The bars in §2
+are dark, so their curvature has the opposite sign; that does not change
+anything below.
+
+```{code-cell} ipython3
+from scipy.ndimage import gaussian_filter1d
+
+BAR_WIDTHS = (2, 4, 8)
+BAR_CENTRES = (50, 140, 240)
+BAR_COLOURS = (C_ONE, C_TWO, C_THREE)
+X_PX = np.arange(300.0)
+
+
+def bar_profile(width, centre=0.0, x=X_PX):
+    """A bar of height 1 whose profile is a Gaussian with sd `width`."""
+    return np.exp(-((x - centre) ** 2) / (2 * width**2))
+
+
+bars_1d = sum(bar_profile(w, c) for w, c in zip(BAR_WIDTHS, BAR_CENTRES))
+
+fig, axes = plt.subplots(1, 3, figsize=(9.6, 2.4), sharey=True)
+for ax, sigma in zip(axes, (1, 4, 12)):
+    recede(ax, f"σ = {sigma}")
+    smooth = gaussian_filter1d(bars_1d, sigma)
+    ax.plot(bars_1d, color=RULE, lw=1)
+    ax.plot(smooth, color=INK, lw=1.2)
+    for centre, colour in zip(BAR_CENTRES, BAR_COLOURS):
+        ax.plot(centre, smooth[centre], "o", color=colour, ms=5)
+axes[0].set_ylabel("intensity", color=MUTED)
+for width, centre, colour in zip(BAR_WIDTHS, BAR_CENTRES, BAR_COLOURS):
+    axes[0].annotate(f"w = {width}", (centre + 2 * width + 4, 0.8),
+                     color=colour, fontsize=8)
+fig.tight_layout()
+```
+
+The grey lines are the bars before smoothing. Every bar gets lower and wider
+as $\sigma$ grows, and the narrow bar changes fastest.
+
++++
+
+### Height over width squared
+
+Smoothing a Gaussian profile with a Gaussian kernel gives another Gaussian
+profile. The variances add, so the smoothed bar has standard deviation
+$s = \sqrt{w^2 + \sigma^2}$. Smoothing keeps the area under the profile, so the
+height falls to $A = w / s$. The smoothed bar is
+
+$$
+f_\sigma(x) = A \exp\left(-\frac{x^2}{2 s^2}\right),
+\qquad
+-f''_\sigma(0) = \frac{A}{s^2} = \frac{w}{(w^2 + \sigma^2)^{3/2}}.
+$$
+
+The curvature at the centre is the height divided by the width squared. Near
+its top, the profile follows the parabola $A\,(1 - x^2 / 2s^2)$, which has the
+same curvature. The profile's inflection points are at $x = \pm s$. Here is the
+$w = 4$ bar at four scales, with that parabola dashed and the inflection points
+marked.
+
+```{code-cell} ipython3
+def smoothed(width, sigma):
+    """Height `A` and sd `s` of a Gaussian bar after smoothing at `sigma`."""
+    s = np.hypot(width, sigma)
+    return width / s, s
+
+
+W_DEMO = 4
+xs = np.linspace(-30, 30, 601)
+
+fig, axes = plt.subplots(1, 4, figsize=(9.6, 2.6), sharey=True)
+for ax, sigma in zip(axes, (0, 2, 4, 8)):
+    A, s = smoothed(W_DEMO, sigma)
+    recede(ax, f"σ = {sigma}:  A = {A:.2f},  s = {s:.1f}")
+    ax.plot(xs, A * np.exp(-xs**2 / (2 * s**2)), color=INK, lw=1.4)
+    # The parabola with the same height and curvature at the centre.
+    near = np.abs(xs) <= 1.5 * s
+    ax.plot(xs[near], A * (1 - xs[near] ** 2 / (2 * s**2)),
+            color=C_ONE, ls="--", lw=1)
+    # The inflection points, at plus and minus s.
+    y_inflect = A * np.exp(-0.5)
+    ax.plot([-s, s], [y_inflect] * 2, "o", color=C_TWO, ms=4)
+    ax.annotate("", (s, y_inflect), (-s, y_inflect),
+                arrowprops=dict(arrowstyle="<->", color=C_TWO, lw=0.8))
+    ax.text(0, y_inflect - 0.12, "2s", ha="center", color=C_TWO, fontsize=8)
+    ax.text(0.98, 0.97, f"$-f''(0) = A / s^2$\n$= {A / s**2:.4f}$",
+            transform=ax.transAxes, ha="right", va="top", fontsize=8)
+    ax.set_ylim(-0.3, 1.1)
+fig.tight_layout()
+```
+
+From $\sigma = 0$ to $\sigma = 8$ the height falls by about half and $s^2$ grows by a
+factor of 5, so the curvature falls by a factor of 11. Both changes push the
+same way, at every $\sigma$. The raw curvature therefore falls monotonically as
+$\sigma$ grows, for a bar of any width. A filter that takes the largest raw
+response over its scales always picks the smallest scale.
+
++++
+
+### What the σ² puts back
+
+Multiplying by $\sigma^2$, which is Lindeberg's scale normalisation with
+$\gamma = 1$, gives
+
+$$
+-\sigma^2 f''_\sigma(0) = \frac{\sigma^2\, w}{(w^2 + \sigma^2)^{3/2}}.
+$$
+
+This now rises and then falls. Below, everything is in the bar's own units:
+heights and curvatures are multiplied by $w^2$, so each curve starts at 1 or
+0. The left panel splits the raw curvature into its two factors. The right
+panel multiplies it by $(\sigma / w)^2$.
+
+```{code-cell} ipython3
+sig = np.geomspace(0.25, 64, 241)
+A, s = smoothed(W_DEMO, sig)
+raw_rel = W_DEMO**2 * A / s**2  # w ** 2 times the raw curvature
+
+fig, axes = plt.subplots(1, 2, figsize=(9.6, 3.0), sharey=True)
+recede(axes[0], "raw curvature = height × 1 / width²")
+axes[0].plot(sig, A, color=C_ONE, label="height $A = w / s$")
+axes[0].plot(sig, (W_DEMO / s) ** 2, color=C_TWO, label="$(w / s)^2$")
+axes[0].plot(sig, raw_rel, color=INK, lw=2,
+             label="product: $w^2 \\cdot (-f''(0))$")
+recede(axes[1], "normalised curvature = raw × σ²")
+axes[1].plot(sig, raw_rel, color=INK, lw=2, label="$w^2 \\cdot (-f''(0))$")
+axes[1].plot(sig, (sig / W_DEMO) ** 2, color=MUTED, ls="--",
+             label="$(\\sigma / w)^2$")
+axes[1].plot(sig, sig**2 * A / s**2, color=C_THREE, lw=2,
+             label="product: $\\sigma^2 \\cdot (-f''(0))$")
+axes[1].axvline(W_DEMO * np.sqrt(2), color=C_THREE, lw=0.8, ls=":")
+for ax in axes:
+    ax.set_xscale("log")
+    ax.set_yscale("log")
+    ax.set_ylim(1e-3, 3)
+    ax.set_xticks([0.25, 1, 4, 16, 64], ["0.25", "1", "4", "16", "64"])
+    ax.minorticks_off()
+    ax.set_xlabel(f"σ, for a bar of width w = {W_DEMO}", color=MUTED)
+axes[0].legend(frameon=False, fontsize=8, loc="lower left")
+axes[1].legend(frameon=False, fontsize=8, loc="upper right")
+fig.tight_layout()
+```
+
+On these log axes the slopes add. For $\sigma$ much larger than $w$, the
+height falls as $\sigma^{-1}$ and $1 / s^2$ as $\sigma^{-2}$, so the raw
+curvature falls as $\sigma^{-3}$. Multiplying by $\sigma^2$ leaves a fall of
+$\sigma^{-1}$. For $\sigma$ much smaller than $w$, the raw curvature is
+flat and $\sigma^2$ makes the product rise. The peak lies between, at
+$\sigma = w\sqrt{2}$ (dotted). There the normalised curvature is
+$2 / (3\sqrt{3}) \approx 0.385$, and $w$ cancels, so that is the peak for a
+bar of any width. SymPy confirms the algebra.
+
+```{code-cell} ipython3
+import sympy as sp
+
+x, y = sp.symbols("x y", real=True)
+w, s = sp.symbols("w sigma", positive=True)
+gauss = lambda z, sd: sp.exp(-z**2 / (2 * sd**2))
+
+# Smooth the bar by convolving with a normalised Gaussian kernel.
+kernel = gauss(x - y, s) / (sp.sqrt(2 * sp.pi) * s)
+f = sp.simplify(sp.integrate(gauss(y, w) * kernel, (y, -sp.oo, sp.oo)))
+S = sp.sqrt(w**2 + s**2)
+assert sp.simplify(f - w / S * gauss(x, S)) == 0
+
+raw = -sp.diff(f, x, 2).subs(x, 0)
+assert sp.simplify(raw - w / S**3) == 0
+
+normed = s**2 * raw
+assert sp.solve(sp.diff(normed, s), s) == [sp.sqrt(2) * w]
+peak = sp.simplify(normed.subs(s, sp.sqrt(2) * w))
+peak, float(peak)
+```
+
+### The same picture at every width
+
+Why does $w$ cancel? Smooth a bar of width $w$ at $\sigma = w\sqrt{2}$, and the
+result has height $1 / \sqrt{3}$ and standard deviation $w\sqrt{3}$. Double
+$w$ and $\sigma$ together and the height is unchanged; the profile is twice
+as wide. Twice as wide means a quarter of the curvature, measured in pixels.
+Measure $x$ in units of $\sigma$ instead, and the profiles are identical. That
+is what the σ² does: $\sigma^2 f''$ is the curvature with $x$ measured in units
+of $\sigma$.
+
+```{code-cell} ipython3
+fig, axes = plt.subplots(1, 2, figsize=(9.6, 2.8))
+recede(axes[0], "σ = w√2, against pixels")
+recede(axes[1], "σ = w√2, against x / σ")
+for width, colour, lw in zip(BAR_WIDTHS, BAR_COLOURS, (4, 2.5, 1.2)):
+    sigma = width * np.sqrt(2)
+    A, s = smoothed(width, sigma)
+    px = np.linspace(-60, 60, 1201)
+    profile = A * np.exp(-px**2 / (2 * s**2))
+    axes[0].plot(px, profile, color=colour, lw=lw,
+                 label=f"w = {width}:  $-f''(0)$ = {A / s**2:.4f}")
+    axes[1].plot(px / sigma, profile, color=colour, lw=lw,
+                 label=f"w = {width}:  $-\\sigma^2 f''(0)$ = "
+                       f"{sigma**2 * A / s**2:.4f}")
+axes[0].set_xlabel("x (pixels)", color=MUTED)
+axes[1].set_xlabel("x / σ", color=MUTED)
+axes[1].set_xlim(-6, 6)
+for ax in axes:
+    ax.set_ylim(0, 0.75)
+    ax.legend(frameon=False, fontsize=8, loc="upper right")
+fig.tight_layout()
+```
+
+The three profiles on the right are drawn with different line widths so that
+all three show; they lie on top of each other.
+
++++
+
+### Measured on the sampled bars
+
+The formulas describe continuous profiles. Here is the curvature at the centre
+of each bar, sampled at whole pixels and measured with `gaussian_filter1d`. We
+measure each bar alone, in a signal long enough that the smoothing never
+reaches its ends. The scales start at $\sigma = 2$: just above $\sigma = 1$
+the sampled second-derivative kernel overstates the curvature of the $w = 8$
+bar by up to 2%, enough to put a false bump in its raw curve. Dotted lines
+mark $\sigma = w\sqrt{2}$.
+
+```{code-cell} ipython3
+BAR_SIGMAS = np.geomspace(2, 32, 121)
+LONG_X = np.arange(1001.0)  # the kernel at sigma = 32 reaches 128 pixels
+
+
+def centre_curvature(width, sigma):
+    """Minus the second derivative at the centre of one isolated bar."""
+    bar = bar_profile(width, centre=500, x=LONG_X)
+    return -gaussian_filter1d(bar, sigma, order=2)[500]
+
+
+curvature = np.array([[centre_curvature(w, s) for w in BAR_WIDTHS]
+                      for s in BAR_SIGMAS])
+normalised = curvature * BAR_SIGMAS[:, None] ** 2
+
+fig, axes = plt.subplots(1, 2, figsize=(9.6, 3.0))
+panels = ((curvature, "raw: $-f''(0)$"),
+          (normalised, "normalised: $-\\sigma^2 f''(0)$"))
+for ax, (values, title) in zip(axes, panels):
+    recede(ax, title)
+    for k, (width, colour) in enumerate(zip(BAR_WIDTHS, BAR_COLOURS)):
+        ax.plot(BAR_SIGMAS, values[:, k], color=colour, lw=1.5,
+                label=f"w = {width}")
+    ax.set_xscale("log")
+    ax.minorticks_off()
+    ax.set_xticks([2, 4, 8, 16, 32], ["2", "4", "8", "16", "32"])
+    ax.set_xlabel("σ", color=MUTED)
+for width, colour in zip(BAR_WIDTHS, BAR_COLOURS):
+    axes[1].axvline(width * np.sqrt(2), color=colour, lw=0.8, ls=":")
+axes[0].legend(frameon=False, fontsize=8)
+fig.tight_layout()
+```
+
+```{code-cell} ipython3
+peak_rows = []
+for k, width in enumerate(BAR_WIDTHS):
+    predicted = BAR_SIGMAS**2 * width / (width**2 + BAR_SIGMAS**2) ** 1.5
+    peak_rows.append({
+        "width": width,
+        "raw best σ": round(BAR_SIGMAS[curvature[:, k].argmax()], 2),
+        "normalised best σ": round(BAR_SIGMAS[normalised[:, k].argmax()], 2),
+        "w√2": round(width * np.sqrt(2), 2),
+        "normalised peak": round(normalised[:, k].max(), 4),
+        "2 / (3√3)": round(2 / (3 * np.sqrt(3)), 4),
+        "largest error vs formula":
+            f"{np.abs(normalised[:, k] - predicted).max():.1e}",
+    })
+show_table(pd.DataFrame(peak_rows), index="width")
+```
+
+Without the σ², every bar's best scale is the smallest one tried, and at that
+scale the narrowest bar scores about 6 times as high as the widest. With it, each bar peaks near $\sigma = w\sqrt{2}$
+with the same score. §3 makes the same measurement on the 2D bars, through
+`frangi`; §5 finds `sato`, which keeps the σ², choosing scales near $w\sqrt{2}$
+too.
 
 ## 1. The four candidates
 
