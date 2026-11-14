@@ -1,6 +1,8 @@
 ---
 title: 'Testing the one-pass Hessian'
 date: 2026-09-17
+options:
+  updated: 2026-11-14
 jupytext:
   formats: ipynb,md:myst
   text_representation:
@@ -14,11 +16,15 @@ kernelspec:
   language: python
 ---
 
-`hessian_matrix` is to change. Today it builds each element of the Hessian with
-**two** convolution passes; the replacement uses **one** pass per element, with
-kernels whose discrete moments have been corrected. `hessian_review.md` measures
-why, against a supersampled reference and an exact spectral one, and
-`on_hessian.md` traces the fault to its cause.
+:::{assisted-by}
+claude-code:claude-opus-5
+:::
+
+`hessian_matrix` builds each element of the Hessian. Up to scikit-image 0.26 it
+used **two** convolution passes. From 0.27, and in `skimage2`, it uses **one**
+pass per element, with kernels whose discrete moments have been corrected.
+`hessian_review.md` measures why, against a supersampled reference and an exact
+spectral one, and `on_hessian.md` traces the fault to its cause.
 
 This notebook asks the narrower question:
 
@@ -31,6 +37,10 @@ of the scale-space literature. One (the boundary rule) is bit-identical when it
 passes; the others use floors argued in §7.5. A single interior Gaussian blob
 is enough for the closed-form check — multi-Gaussian scenes belong in
 `hessian_review.md`, where they validate references, not here.
+
+§1 transcribes both schemes rather than importing either, so the tests do not
+depend on which release is installed. §1.1 reports which scheme the installed
+library implements.
 
 ```{code-cell} ipython3
 import functools
@@ -46,8 +56,12 @@ from nbhelper import show_table
 ```
 
 ```{code-cell} ipython3
+# The subject under test, in both namespaces.
 import skimage as ski
-from skimage.feature import hessian_matrix
+import _skimage2
+from scipy import linalg as scipy_linalg
+from skimage.feature import hessian_matrix, hessian_matrix_eigvals
+from _skimage2.feature import hessian_matrix as hessian_matrix2
 ```
 
 ```{code-cell} ipython3
@@ -84,15 +98,19 @@ def recede(ax, title=None):
     return ax
 ```
 
-## 1. The two candidates
+## 1. The two schemes
 
 Both compute the same continuous quantity: the second derivatives of the image
 after smoothing with a Gaussian of width σ. They differ in how many times each
 axis is touched, and in what kernel does the touching.
 
+Each is transcribed here. Neither is imported, so the name of a scheme means
+one fixed arithmetic in this notebook, and not whatever the installed release
+happens to do.
+
 ```{code-cell} ipython3
-def shipped(image, sigma, mode="nearest", cval=0):
-    """The scheme in the library: two first-order passes at sigma/sqrt(2)."""
+def two_pass(image, sigma, mode="nearest", cval=0):
+    """scikit-image <= 0.26: two first-order passes at sigma/sqrt(2)."""
     image = np.asarray(image, dtype=float)
     ndim = image.ndim
     if np.isscalar(sigma):
@@ -107,25 +125,7 @@ def shipped(image, sigma, mode="nearest", cval=0):
             for a, b in combinations_with_replacement(range(ndim), 2)]
 ```
 
-That transcription must be faithful for anything below to mean anything, so
-check it against the library before going on.
-
-```{code-cell} ipython3
-PHOTO = ski.util.img_as_float(ski.data.camera())[::2, ::2]
-
-show_table(pd.DataFrame(
-    [{"sigma": str(sigma),
-      "transcription vs skimage": f"{max(np.abs(a - b).max() for a, b in zip(
-          hessian_matrix(PHOTO, sigma=sigma, mode='nearest',
-                         use_gaussian_derivatives=True),
-          shipped(PHOTO, sigma, mode='nearest'))):.1e}"}
-     for sigma in (0.5, 1.0, 2.0, (2.0, 3.0))]), index="sigma")
-```
-
-Bit-identical at every setting, so `shipped` *is* the library for the rest of
-this notebook.
-
-The replacement asks for the whole derivative in one go. Each axis is convolved
+The one-pass scheme asks for the whole derivative in one go. Each axis is convolved
 exactly once — twice-differentiated, once-differentiated or merely smoothed —
 so the boundary rule is applied once, and there is no first-or-second choice to
 get wrong on the mixed element. That brings back the even second-derivative
@@ -151,7 +151,7 @@ def taps(sigma, order, truncate=8):
 
 
 def one_pass(image, sigma, mode="nearest", cval=0, truncate=8, kernel=taps):
-    """One convolution pass per element, with the corrected kernels."""
+    """scikit-image >= 0.27: one pass per element, with the corrected kernels."""
     image = np.asarray(image, dtype=float)
     ndim = image.ndim
     if np.isscalar(sigma):
@@ -171,12 +171,72 @@ def one_pass(image, sigma, mode="nearest", cval=0, truncate=8, kernel=taps):
     return elements
 
 
-METHODS = (("shipped, two-pass", shipped), ("one-pass, corrected", one_pass))
+METHODS = (("two-pass (<= 0.26)", two_pass), ("one-pass (>= 0.27)", one_pass))
 ```
 
 The three comments in `taps` are the whole of the correction, and they are also
 the first three tests: a filter that gets 1, $x$ and $x^2/2$ right gets every
 quadratic right.
+
+The one-pass function that ships carries one more thing, which no kernel can
+supply: an exactly flat image returns exact zeros, by inspection rather than by
+arithmetic. §4.1 to §4.3 are about why.
+
+```{code-cell} ipython3
+def one_pass_shortcut(image, sigma, mode="nearest", cval=0, **kwargs):
+    """`one_pass`, plus the short circuit for a flat image that 0.27 ships."""
+    image = np.asarray(image, dtype=float)
+    flat = image.size and np.ptp(image) == 0
+    if flat and (mode != "constant" or cval == image.flat[0]):
+        n_elements = image.ndim * (image.ndim + 1) // 2
+        return [np.zeros_like(image) for _ in range(n_elements)]
+    return one_pass(image, sigma, mode=mode, cval=cval, **kwargs)
+
+
+SCHEMES = METHODS + (("one-pass + short circuit", one_pass_shortcut),)
+```
+
++++
+
+### 1.1 Which scheme is installed
+
+Both namespaces are measured against all three transcriptions. The nearest one
+names the arithmetic the installed release uses.
+
+```{code-cell} ipython3
+PHOTO = ski.util.img_as_float(ski.data.camera())[::2, ::2]
+
+
+def nearest_scheme(func, sigma):
+    """Name the transcription an installed `hessian_matrix` agrees with."""
+    try:                      # `use_gaussian_derivatives` went in 0.27
+        got = func(PHOTO, sigma=sigma, mode="nearest",
+                   use_gaussian_derivatives=True)
+    except TypeError:
+        got = func(PHOTO, sigma=sigma, mode="nearest")
+    gaps = {name: max(np.abs(a - b).max() for a, b in zip(got, s(PHOTO, sigma)))
+            for name, s in SCHEMES}
+    best = min(gaps, key=gaps.get)
+    return best, gaps[best]
+
+
+INSTALLED = (("skimage.feature", hessian_matrix),
+             ("_skimage2.feature", hessian_matrix2))
+
+show_table(pd.DataFrame(
+    [{"namespace": label, "sigma": str(sigma),
+      "agrees with": nearest_scheme(func, sigma)[0],
+      "gap": f"{nearest_scheme(func, sigma)[1]:.1e}"}
+     for label, func in INSTALLED for sigma in (0.5, 2.0)]), index="namespace")
+```
+
+The gap is zero where a transcription is exact, so the table reads as an
+identification and not as a tolerance.
+
+§2 to §8 use the transcriptions alone, so the five tests say the same thing in
+either environment. §4.1 to §4.3 are the exception: they call the installed
+`meijering`, `frangi` and `sato`, with only the Hessian replaced, so their
+numbers carry the installed filters' own arithmetic.
 
 +++
 
@@ -216,14 +276,14 @@ show_table(pd.DataFrame(
 ```
 
 The one-pass column is not "small": it is `0.00%` because the two arrays are
-bit-identical. The shipped column is wrong by a large fraction of the peak
+bit-identical. The two-pass column is wrong by a large fraction of the peak
 response — about a fifth for `nearest` on this picture, and more for some of
 the other modes — except `wrap`, which is the control below.
 
 The `wrap` row is the control that makes the rest of the table mean something.
 A periodic extension is the one rule under which applying the extension twice is
-the same as applying it once, so the shipped scheme passes there too. The test
-is not one that any filter passes, and not one that the shipped filter always
+the same as applying it once, so the two-pass scheme passes there too. The test
+is not one that any filter passes, and not one that the two-pass filter always
 fails: it separates exactly the cases it should.
 
 ```{code-cell} ipython3
@@ -258,7 +318,7 @@ left edge rather than at a corner. The one-pass panel is not faint: every pixel
 in it is exactly zero, so the whole panel sits on the floor of the scale.
 
 ```{code-cell} ipython3
-rim = gaps["shipped, two-pass"] > 0.01
+rim = gaps["two-pass (<= 0.26)"] > 0.01
 within_two = np.zeros_like(rim)
 within_two[:2] = within_two[-2:] = True
 within_two[:, :2] = within_two[:, -2:] = True
@@ -266,7 +326,7 @@ show_table(pd.DataFrame([{
     "pixels above 1% of the peak": int(rim.sum()),
     "of those, within 2 px of an edge": int((rim & within_two).sum()),
     "worst pixel": str(tuple(int(i) for i in np.unravel_index(
-        gaps["shipped, two-pass"].argmax(), rim.shape))),
+        gaps["two-pass (<= 0.26)"].argmax(), rim.shape))),
 }]))
 ```
 
@@ -328,7 +388,7 @@ show_table(pd.DataFrame(
 ```
 
 The one-pass column sits at the rounding floor everywhere — two and three
-dimensions, isotropic and anisotropic σ — and the shipped column is eleven
+dimensions, isotropic and anisotropic σ — and the two-pass column is eleven
 orders above it at σ = 0.4. The figure below says what that means in the units a caller
 cares about.
 
@@ -351,7 +411,7 @@ ax.legend(frameon=False, fontsize=8, loc="lower right")
 fig.tight_layout()
 ```
 
-The shipped curve does not approach the answer until σ is about 1, which is
+The two-pass curve does not approach the answer until σ is about 1, which is
 where its own docstring advises callers not to go below. The corrected curve is
 on the line at every σ in the sweep.
 
@@ -368,86 +428,148 @@ premise with the thing it checks.
 ## 4. Test 3 — a constant image has no curvature
 
 The quadratic test contains this one, but it is worth its own name, because it
-is the property the shipped scheme was designed around and the only one where
+is the property the two-pass scheme was designed around and the only one where
 the correction is the weaker of the two.
 
 ```{code-cell} ipython3
 flat = np.full((64, 64), 0.4)
 show_table(pd.DataFrame(
     [{"sigma": sigma,
-      **{name: f"{max(np.abs(h).max() for h in method(flat, sigma)):.1e}"
-         for name, method in METHODS}}
+      **{name: f"{max(np.abs(h).max() for h in scheme(flat, sigma)):.1e}"
+         for name, scheme in SCHEMES}}
      for sigma in (0.4, 0.5, 1.0, 3.0)]), index="sigma")
 ```
 
-The shipped scheme returns exactly zero, by symmetry: it never uses an even
+The two-pass scheme returns exactly zero, by symmetry: it never uses an even
 kernel, and an odd kernel's taps cancel in pairs however coarsely they are
-sampled. The corrected kernel returns about $10^{-16}$, because its first tap
-condition is imposed by subtraction rather than granted by symmetry.
+sampled. The bare corrected kernel returns about $10^{-16}$, because its first
+tap condition is imposed by subtraction rather than granted by symmetry. The
+short circuit returns exact zeros again, by not running the kernel at all.
 
 So the test is `atol=1e-12`, not `== 0`, and the tolerance is chosen from the
 mechanism: one subtraction of numbers of order one, on an image of order one.
-Asserting exact equality here would be asserting the old implementation's
-symmetry, not the documented behaviour.
+Asserting exact equality would assert the short circuit rather than the
+documented behaviour, and would pass for a flat image only.
 
-### 4.1 That $10^{-16}$ is not free
+### 4.1 What the $10^{-16}$ costs the consuming filters
 
-The exact zero was load-bearing. Two of the four ridge filters that consume
-`hessian_matrix` divide by a quantity derived from the Hessian, and a divisor
-that is rounding noise turns the noise into the output. `meijering` scales each
-scale by its own maximum; `frangi` takes its contrast reference γ from
-`s.max()`. Both guard the divisor against being *exactly* zero, and that guard
-is sufficient only while the Hessian is exactly zero.
+Two of the four ridge filters that consume `hessian_matrix` divide by a
+quantity derived from the Hessian, and a divisor that is rounding noise turns
+the noise into the output. `meijering` scales each scale by its own maximum;
+`frangi` takes its contrast reference γ from `s.max()`. Both guard the divisor
+against being *exactly* zero, and that guard holds only while the Hessian is
+exactly zero.
+
+The three schemes are measured through the installed filters. Patching the
+name the filters import is what makes the comparison possible in one process,
+and `**kwargs` in the adapter is what makes it work against either release.
 
 ```{code-cell} ipython3
-import importlib
 from unittest import mock
 
-from skimage.filters import meijering, frangi
+from skimage.filters import meijering, frangi, sato
 
-# `frangi` and `meijering` import `hessian_matrix` inside the function body,
-# from the implementation package, so that is the name to replace.
-corner_module = importlib.import_module("_skimage2.feature.corner")
+# `frangi`, `meijering` and `sato` import `hessian_matrix` inside the function
+# body, from the implementation package, so that is the name to replace.
+import _skimage2.feature.corner as corner_module
 
 
 def as_hessian_matrix(rule):
-    """Wrap a Hessian rule in the `hessian_matrix` signature, ready to patch."""
-    def replacement(image, sigma=1, mode="reflect", cval=0, order="rc",
-                    use_gaussian_derivatives=True):
+    """Wrap a Hessian rule in the `hessian_matrix` signature, ready to patch.
+
+    `**kwargs` absorbs the parameters that differ between releases: `order` and
+    `use_gaussian_derivatives` up to 0.26, `truncate` from 0.27.
+    """
+    def replacement(image, sigma=1, mode="reflect", cval=0, **kwargs):
         return rule(np.asarray(image, float), sigma, mode=mode, cval=cval)
     return replacement
 
 
-rows = []
-for constant in (0.4, 1.0, 1 / 3, 0.7):
-    flat_image = np.full((48, 48), float(constant))
-    row = {"constant image": round(constant, 4)}
-    for label, method in (("shipped", None), ("one-pass", one_pass)):
-        if method is None:
-            row[f"meijering, {label}"] = meijering(flat_image, sigmas=[1, 3]).max()
-            row[f"frangi, {label}"] = frangi(flat_image, sigmas=[1, 3]).max()
-        else:
-            with mock.patch.object(corner_module, "hessian_matrix",
-                                   as_hessian_matrix(method)):
-                row[f"meijering, {label}"] = meijering(flat_image,
-                                                       sigmas=[1, 3]).max()
-                row[f"frangi, {label}"] = frangi(flat_image, sigmas=[1, 3]).max()
-    rows.append(row)
-show_table(pd.DataFrame(rows).round(6), index="constant image")
+def filter_scores(image):
+    """Each filter's peak score on `image`, under each of the three schemes."""
+    row = {}
+    for label, scheme in SCHEMES:
+        with mock.patch.object(corner_module, "hessian_matrix",
+                               as_hessian_matrix(scheme)):
+            for name, func in (("meij", meijering), ("frangi", frangi),
+                               ("sato", sato)):
+                row[f"{name}, {label}"] = func(image, sigmas=[1, 3]).max()
+    return row
+
+
+CONSTANTS = (0.4, 1.0, 1 / 3, 0.7)
+
+show_table(pd.DataFrame(
+    [{"constant image": round(c, 4),
+      **{k: v for k, v in filter_scores(np.full((48, 48), float(c))).items()
+         if not k.startswith("sato")}}
+     for c in CONSTANTS]).round(6), index="constant image")
 ```
 
-A flat image comes out of `frangi` at 0.8647 — the largest score it can return
-— and out of `meijering` at 1.0 everywhere. The `0.4` row is a coincidence
-worth noticing: it is a constant whose rounding noise happens to leave
-`meijering`'s selected eigenvalue non-positive, so the clip to zero catches it.
-Nothing about `0.4` is special otherwise, and a test that used only that
-constant would miss this.
+Read the three pairs of columns as the three schemes. Under two-pass every
+score is zero. Under the bare corrected kernel `meijering` returns 1.0 — its
+largest score — for three of the four constants, and `frangi` returns 0.07 to
+0.12. The short circuit returns the column to zero, which is what it is for.
 
-The repair belongs in those two filters, not in the kernel, for a reason that
-is measurable: the exact zero cannot be recovered. Repairing the kernel's sum
-again after the correction converges at σ = 0.5 and stalls at about
-$10^{-17}$ from σ = 1 upward, because the adjustment falls below the last bit
-of the accumulated sum — and `correlate1d` sums in its own order in any case.
+`0.4` is the row to notice. Its rounding noise happens to leave `meijering`'s
+selected eigenvalue non-positive, so the clip to zero catches it, and the bare
+kernel looks sound. Nothing about `0.4` is special otherwise. A test that used
+only that constant would report no fault.
+
++++
+
+### 4.2 The short circuit moves the cliff rather than removing it
+
+`np.ptp(image) == 0` is exact equality, so it fires on a flat image and on
+nothing else. Move one pixel by one part in $10^{15}$ and the divisor is
+rounding noise again, under every scheme.
+
+```{code-cell} ipython3
+def nudged(constant, delta=1e-15):
+    """A flat image with one pixel moved off the constant."""
+    image = np.full((48, 48), float(constant))
+    image[0, 0] += delta
+    return image
+
+
+show_table(pd.DataFrame(
+    [{"constant image": round(c, 4),
+      **{k: v for k, v in filter_scores(nudged(c)).items()
+         if not k.startswith("sato")}}
+     for c in CONSTANTS]).round(6), index="constant image")
+```
+
+`meijering` returns 1.0 for every constant and every scheme, including
+two-pass. So this fault is not a consequence of the kernel change: the two-pass
+scheme amplifies the same noise, and §1.1 identifies that scheme as the one
+0.26 installs. What the kernel change broke is the exactly flat image alone,
+and the short circuit closed that.
+
+`0.4` fails here too, which makes the nudged image the better test: it catches
+all four constants and all three schemes, where the flat image catches three
+constants and one scheme.
+
+`sato` is clear in both tables. It takes a product of clipped eigenvalues and
+divides by nothing, so noise in the Hessian stays noise in the output.
+
+```{code-cell} ipython3
+show_table(pd.DataFrame(
+    [{"image": label,
+      **{k: f"{v:.2e}" for k, v in filter_scores(image).items()
+         if k.startswith("sato")}}
+     for label, image in (("flat 0.7", np.full((48, 48), 0.7)),
+                          ("flat 0.7, one pixel +1e-15", nudged(0.7)))]),
+    index="image")
+```
+
++++
+
+### 4.3 Why the repair went into the kernel's caller and not the kernel
+
+Repairing the kernel's sum again, after the correction, converges at σ = 0.5
+and stalls at about $10^{-17}$ from σ = 1 upward. The adjustment falls below
+the last bit of the accumulated sum, and `correlate1d` sums in its own order in
+any case.
 
 ```{code-cell} ipython3
 rows = []
@@ -467,10 +589,52 @@ for sigma in (0.5, 1.0, 2.0, 3.0):
 show_table(pd.DataFrame(rows), index="sigma")
 ```
 
-So each consuming filter compares its divisor against a floor scaled to the
-image, `100 * eps * abs(image).max()`, rather than against zero. That is a
-change to `meijering` and `frangi` caused by this one, and it belongs in the
-same pull request — it is not scope creep, it is the cost.
+An exact zero is therefore not available from the taps, and the short circuit
+supplies it by inspection instead. That is the whole of the repair the release
+carries, and §4.2 shows what it does not reach.
+
+The remaining fault wants a floor in each consuming filter: compare the divisor
+against `100 * eps * abs(image).max()` rather than against zero. Both filters
+are self-normalising — `meijering` divides by its own per-scale maximum,
+`frangi` takes γ from `s.max()` — so any input with a non-zero response
+normalises to full scale, and rounding noise is the only place a principled
+floor can sit.
+
+```{code-cell} ipython3
+def meijering_floored(image, sigmas, scheme, floor):
+    """`meijering`'s normalisation, with the divisor floored or not."""
+    ndim = image.ndim
+    alpha = -1 / (ndim + 1)
+    mtx = scipy_linalg.circulant([1, *[alpha] * (ndim - 1)])
+    limit = 100 * np.finfo(float).eps * np.abs(image).max() if floor else 0.0
+    out = np.zeros_like(image, dtype=float)
+    for sigma in sigmas:
+        eigvals = hessian_matrix_eigvals(scheme(-image, sigma, mode="reflect"))
+        vals = np.tensordot(mtx, eigvals, 1)
+        vals = np.take_along_axis(vals, abs(vals).argmax(0)[None], 0).squeeze(0)
+        vals = np.maximum(vals, 0)
+        peak = vals.max()
+        vals = vals / peak if peak > limit else np.zeros_like(vals)
+        out = np.maximum(out, vals)
+    return out
+
+
+RIDGE = ski.util.img_as_float(ski.data.camera())[100:160, 100:160]
+
+show_table(pd.DataFrame(
+    [{"image": label,
+      **{name: f"{meijering_floored(image, [1, 3], one_pass_shortcut, floor).max():.4f}"
+         for name, floor in (("divisor > 0", False), ("divisor > floor", True))}}
+     for label, image in (("flat 0.7", np.full((48, 48), 0.7)),
+                          ("flat 0.7, one pixel +1e-15", nudged(0.7)),
+                          ("camera crop", RIDGE))]
+    ), index="image")
+```
+
+The floor zeroes the nudged image and leaves the photograph alone. It is a fix
+for a fault that every release has carried, so it is not a cost of the kernel
+change and does not belong in the same pull request. `on_meijering.md` and
+`on_frangi.md` are where it goes.
 
 +++
 
@@ -511,9 +675,9 @@ show_table(pd.DataFrame(
      for sigma in (0.5, 0.7, 1.0, 2.0, 4.0)]), index="sigma")
 ```
 
-At σ = 0.5 the shipped scheme is 92% wrong and the corrected one 0.3% wrong. At
+At σ = 0.5 the two-pass scheme is 92% wrong and the corrected one 0.3% wrong. At
 σ ≥ 2 both are at the rounding floor and the comparison says nothing — the
-shipped scheme is even a little closer there, which is rounding, not accuracy.
+two-pass scheme is even a little closer there, which is rounding, not accuracy.
 
 That 0.3% is the honest limit of the whole change. Correcting the kernel fixes
 the operator on polynomials, which is a statement about zero frequency; a
@@ -539,7 +703,7 @@ ax.legend(frameon=False, fontsize=8)
 fig.tight_layout()
 ```
 
-The corrected curve lies on the closed form; the shipped one is a flat line near
+The corrected curve lies on the closed form; the two-pass one is a flat line near
 zero, which is the same gain collapse §3 measured, now on a structure nobody
 would call a corner case.
 
@@ -553,8 +717,8 @@ numbers of order $\sigma^{-2}$, and what should survive is of order
 $e^{-1/2\sigma^{2}}$: at σ = 0.1 the whole of it is lost.
 
 [DIPlib](https://diplib.org)'s published recipe subtracts the *mean* instead,
-which is stable. Taking what is left out of the centre tap, as the shipped
-version does, is a third option.
+which is stable. Taking what is left out of the centre tap, as the one-pass
+kernel does, is a third option.
 
 ```{code-cell} ipython3
 def variant_taps(sigma, order, truncate=8, fix="centre"):
@@ -584,7 +748,7 @@ def with_variant(fix):
 
 VARIANTS = [("subtract k.sum() * g", "gaussian"),
             ("subtract the mean", "mean"),
-            ("both, as shipped", "centre")]
+            ("both, as the kernel ships", "centre")]
 flat_small = np.full((64, 64), 0.4)
 
 show_table(pd.DataFrame(
@@ -615,8 +779,8 @@ look sensible.
 
 A Hessian is a tensor. Relabel the axes and its entries must follow the
 relabelling, with no arithmetic anywhere. This is the contract the `order`
-argument was there to express, and it is about to be expressed by the tensor
-instead.
+argument was there to express. `skimage2.feature.hessian_matrix` has no
+`order`, and expresses it through the tensor instead.
 
 ```{code-cell} ipython3
 def transpose_gap(method, image, sigma):
@@ -643,9 +807,9 @@ for name, method in METHODS:
     mixed_gaps[name] = np.abs(mixed - turned_back) / np.abs(mixed).max()
 
 fig, axes = plt.subplots(1, 3, figsize=(9.6, 3.3))
-limit = np.abs(shipped(PHOTO, 2.0)[1]).max()
+limit = np.abs(two_pass(PHOTO, 2.0)[1]).max()
 bare(axes[0], "$H_{rc}$ of the picture")
-axes[0].imshow(shipped(PHOTO, 2.0)[1], cmap="gray", vmin=-limit, vmax=limit)
+axes[0].imshow(two_pass(PHOTO, 2.0)[1], cmap="gray", vmin=-limit, vmax=limit)
 for ax, (name, _) in zip(axes[1:], METHODS):
     bare(ax, f"{name}\nworst {mixed_gaps[name].max():.1%} of $|H_{{rc}}|$")
     image = ax.imshow(np.maximum(mixed_gaps[name], FLOOR), cmap="magma",
@@ -658,14 +822,15 @@ fig.tight_layout()
 ```
 
 Only the mixed element can differ — it is the only one built by differentiating
-along two *different* axes — and under the shipped scheme it differs along the
+along two *different* axes — and under the two-pass scheme it differs along the
 whole border, because the two axes are extended in different frames.
 
 ### 6.1 What this means for `order='xy'`
 
 With the contract restored, `order='xy'` is the reversed list and nothing more.
-A caller who needs the old numbers bit-for-bit needs the transposed shim
-instead, because the old numbers include the border fault.
+Reversing is not enough for the two-pass numbers, because those include the
+border fault, and reproducing them needs the whole computation run in the
+transposed frame.
 
 ```{code-cell} ipython3
 def as_xy(method, image, sigma, **kwargs):
@@ -684,9 +849,14 @@ show_table(pd.DataFrame(
      for sigma in (0.5, 1.0, (2.0, 3.0))]), index="sigma")
 ```
 
-For the corrected filter the two shims agree to rounding, so the cheap one is
-correct. For the shipped filter they differ by up to 14%, which is why the
-migration note has to name the transposed one.
+For the corrected filter the two shims agree to rounding, so the reversed list
+is correct. For the two-pass filter they differ by up to 14%.
+
+That 14% is the whole of the question for a port. `skimage.feature.hessian_matrix`
+answers with the one-pass scheme from 0.27, including for
+`use_gaussian_derivatives=True`, so no supported call returns two-pass numbers
+and the transposed shim has nothing left to reproduce. The migration note
+names the reversed list.
 
 +++
 
@@ -767,7 +937,7 @@ habit.
 ### 7.4 Do not test only `wrap`
 
 §2's control row is the trap seen from the other side. `wrap` is the one mode
-the shipped scheme gets right, so a border test parametrised over `wrap` alone
+the two-pass scheme gets right, so a border test parametrised over `wrap` alone
 passes on the unfixed filter.
 
 ### 7.5 Take the tolerance from the mechanism
@@ -845,10 +1015,10 @@ SUITE = [test_boundary_rule_is_applied_once, test_exact_on_a_quadratic,
          test_transposing_the_image_transposes_the_answer]
 
 
-def outcome(test, method):
-    """Run one test against one candidate, and report pass or FAIL."""
+def outcome(test, scheme):
+    """Run one test against one scheme, and report pass or FAIL."""
     try:
-        test(method)
+        test(scheme)
         return "pass"
     except AssertionError:
         return "FAIL"
@@ -857,15 +1027,30 @@ def outcome(test, method):
 show_table(pd.DataFrame(
     [{"test": test.__name__.removeprefix("test_").replace("_", " "),
       "asserts": test.__doc__.splitlines()[0],
-      **{name: outcome(test, method) for name, method in METHODS}}
+      **{name: outcome(test, scheme) for name, scheme in SCHEMES}}
      for test in SUITE]), index="test")
 ```
 
-Four of the five fail on the shipped scheme. The exception is the constant, and
-that is not an accident: the shipped scheme exists because someone noticed that
+Four of the five fail on the two-pass scheme. The exception is the constant, and
+that is not an accident: the two-pass scheme exists because someone noticed that
 a sampled second-derivative kernel responds to a flat image, and built a pair of
 odd first-derivative passes that cannot. It solved the one problem it was aimed
 at and created the other four.
+
+Both one-pass schemes pass all five. The short circuit changes no outcome
+here: the constant test has a floor of `1e-12`, which $10^{-16}$ already meets,
+so the short circuit changes that test's margin and not its result. §4.2 is
+where it matters and §4.3 is why it exists.
+
+These five landed as
+`test_hessian_matrix_applies_the_boundary_rule_once`,
+`test_hessian_matrix_is_exact_on_a_quadratic`,
+`test_hessian_matrix_has_no_response_to_a_constant`,
+`test_hessian_matrix_matches_a_gaussian_blob` and
+`test_hessian_matrix_transposes_with_the_image` in
+`tests/skimage2/feature/test_corner.py`, calling public `hessian_matrix`. The
+`skimage` suite carries the first four against
+`use_gaussian_derivatives=True`.
 
 +++
 
@@ -914,18 +1099,22 @@ its last digit.
 
 **Limits.** One photograph (256², `camera` decimated), one synthetic quadratic
 and one Gaussian blob, at σ from 0.1 to 4, in two and three dimensions. §4.1
-measures two consuming filters on flat images only; what the guard does to them
-on real images is `on_frangi.md` and `on_meijering.md`'s business, not this
-notebook's. The
-five tests above are pointed at the local candidates (`shipped` / `one_pass`);
-when they land in the library suite they must call public `hessian_matrix`,
-not a notebook transcription. `float32` input is not tested here, nor is the
-behaviour at σ below 0.3, where §5's aliasing residue grows and no kernel
-repair addresses it. The `interior()` rule assumes `truncate=8`; a caller
-passing a larger `truncate` needs a larger crop. The timings are single runs on
-one machine and are indicative only.
+to §4.3 measure the consuming filters on flat and near-flat images only; what
+the floor does to them on real images is `on_frangi.md` and `on_meijering.md`'s
+business, not this notebook's, and the one photograph in §4.3 is a check that
+the floor does not fire, not a measurement of its effect. The five tests run
+against the transcriptions, not against the installed `hessian_matrix`; §1.1
+identifies the installed scheme but does not run the suite against it.
+`float32` input is not tested here, nor is the behaviour at σ below 0.3, where
+§5's aliasing residue grows and no kernel repair addresses it. The
+`interior()` rule assumes `truncate=8`; a caller passing a larger `truncate`
+needs a larger crop. The timings are single runs on one machine and are
+indicative only.
 
 ```{code-cell} ipython3
-print(f"scikit-image {ski.__version__}")
-print(f"scipy        {__import__('scipy').__version__}")
+print(f"scikit-image  {ski.__version__}")
+print(f"_skimage2     {_skimage2.__version__}")
+print(f"scipy         {__import__('scipy').__version__}")
+for label, func in INSTALLED:
+    print(f"{label:<13} implements {nearest_scheme(func, 1.0)[0]}")
 ```
