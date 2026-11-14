@@ -1,6 +1,4 @@
 ---
-title: 'The second derivative of a smoothed image'
-date: 2026-09-14
 jupytext:
   formats: ipynb,md:myst
   text_representation:
@@ -95,20 +93,30 @@ is not defined until we say what we mean by it.
 Differencing neighbouring pixels is the obvious answer and a bad one: it
 amplifies noise without limit, and the answer changes if the same scene is
 photographed at a different resolution. The standard remedy is to **fix a
-scale**. Convolve with a Gaussian of width `sigma`, which is smooth and
+scale**. Convolve with a Gaussian of width $\sigma$, which is smooth and
 differentiable, and differentiate that instead. The scale is then part of the
 question rather than an accident of the sensor.
 
-For second derivatives this gives the **Hessian at scale sigma**: for a 2-D
+For second derivatives this gives the **Hessian at scale $\sigma$**: for a 2-D
 image, three distinct entries, because mixed partials are equal.
 
-```
-    H = | Hii  Hij |          Hij = d2/di dj  ( G_sigma * f )
-        | Hij  Hjj |
-```
+Subscripts $i$ and $j$ name the image axes throughout this document, in
+skimage's `rc` order: axis $i$ is the first array axis, down the rows, and
+axis $j$ the second, across the columns. $x_i$ is the coordinate along axis
+$i$.
+
+$$
+H =
+\begin{pmatrix}
+H_{ii} & H_{ij} \\
+H_{ij} & H_{jj}
+\end{pmatrix},
+\qquad
+H_{ij} = \frac{\partial^{2}}{\partial x_i \, \partial x_j}(G_{\sigma} \ast f)
+$$
 
 Its eigenvalues describe local curvature. At each pixel the Hessian is a
-symmetric 2×2 matrix, so it has two real eigenvalues `λ` and two orthogonal
+symmetric 2×2 matrix, so it has two real eigenvalues $\lambda$ and two orthogonal
 eigenvectors. Each eigenvalue is the second directional derivative of the
 smoothed image along its eigenvector: how sharply the intensity bends when you
 step in that direction. The eigenvectors are the principal-curvature axes —
@@ -283,17 +291,18 @@ fig.tight_layout()
 ```
 
 So the quantity we are after is fixed and unambiguous: the second derivative of
-the image *after* smoothing by a Gaussian of width `sigma`. The rest of this
+the image *after* smoothing by a Gaussian of width $\sigma$. The rest of this
 document is about how to compute that quantity on a discrete grid, and how to
 tell whether a given method has computed it correctly.
 
 ## 2. Two ways to compute it
 
-Convolution and differentiation commute. For a Gaussian `G` and an image `f`:
+Convolution and differentiation commute. For a Gaussian $G$ and an image $f$:
 
-```
-    d/dx ( G * f )  ==  ( dG/dx ) * f
-```
+$$
+\frac{\partial}{\partial x_i}(G \ast f) =
+\left( \frac{\partial }{\partial x_i} G \right) \ast f
+$$
 
 Either side is a route to the same continuous quantity, and the two sides
 suggest two different programs.
@@ -348,7 +357,7 @@ There are four available, and they check each other.
 ### 3.1 A closed form, for images made of Gaussians
 
 A Gaussian smoothed by a Gaussian is another Gaussian, with
-`t**2 = s**2 + sigma**2`. So for a test image built from Gaussians, the smoothed
+$t^2 = s^2 + \sigma^2$. So for a test image built from Gaussians, the smoothed
 Hessian is known exactly, in closed form, with no discretisation anywhere.
 That is what `analytic_scene_hessian` computes (§1): term-by-term for every
 blob or ridge in a scene. `SOLO` is the one-blob case; `SCENE` below adds
@@ -462,13 +471,13 @@ Three details in that function are not decoration. The image is padded
 **once**, before anything else happens, so the boundary rule is applied a single
 time — any reference that extends the image more than once is measuring its own
 artefacts. The padding clears the kernel, so the crop never sees an edge. And
-the pad is half the image on each axis rather than a multiple of `sigma`,
+the pad is half the image on each axis rather than a multiple of $\sigma$,
 because the resampler reads its input as periodic: that is the amount which
 makes the padded array a whole number of periods.
 
 The fine-grid derivatives still use SciPy's uncorrected `order=2` kernels; at
 `factor * sigma` those kernels are already well sampled (section 5), so the
-yardstick is not carrying the small-sigma leak it is used to judge.
+yardstick is not carrying the small-$\sigma$ leak it is used to judge.
 
 The reference therefore has two error sources, and only one of them answers to
 `factor`. Refinement controls how well the fine-grid kernels are sampled.
@@ -510,7 +519,7 @@ show_table(pd.DataFrame(rows))
 
 At `k = 4` the reference reproduces the closed form to the printed precision at
 comfortable scales, and refining further changes nothing. So `k = 4` is enough
-*on this scene*. (Below `sigma ≈ 1` the gap is the small-σ kernel sampling of
+*on this scene*. (Below $\sigma \approx 1$ the gap is the small-$\sigma$ kernel sampling of
 section 5, not a failure of the closed form.)
 
 It is tempting to read that as trustworthiness on images with no closed form,
@@ -523,7 +532,7 @@ the same reference on an image that does reach the border and finds an error
 
 The `k = 1` column is worth a second look, because it is not a reference at all:
 it is route B computed directly on the original grid, with no refinement. At
-`sigma = 0.3` it is wrong by a large factor. That is the first sign of the
+$\sigma = 0.3$ it is wrong by a large factor. That is the first sign of the
 problem section 5 is about, and it appears here as a control rather than as a
 claim.
 
@@ -624,7 +633,7 @@ code under test (`nearest`, and so on). On Gaussian scenes these are not
 competing opinions: the closed forms are identities, and both numerical
 standards converge to them on the interior.
 
-At `sigma ≥ 1.5` the shipped filter, the supersampler, and the multi-Gaussian
+At $\sigma \ge 1.5$ the shipped filter, the supersampler, and the multi-Gaussian
 analytic agree to the printed precision on the interior. Below that they part
 company — and the analytic, not the supersampler, is the one that stays exact,
 which is why the gallery earns its keep next to the supersampler.
@@ -711,13 +720,14 @@ the two references. A test that can: a single DCT-II basis function, which is
 *exactly* band-limited, so the model both references assume is not an
 approximation but a fact, and whose smoothed Hessian is known in closed form.
 
-For $u_{k,l} = \cos a(k+\tfrac12)\cos b(l+\tfrac12)$ with $a = \pi m/M$,
-$b = \pi n/N$, smoothing multiplies by $E = e^{-\sigma^2(a^2+b^2)/2}$ and
+For $u_{k,l} = \cos a(k+\tfrac12)\cos b(l+\tfrac12)$, where $k$ runs along axis
+$i$ at $a = \pi m/M$ and $l$ along axis $j$ at $b = \pi n/N$, smoothing
+multiplies by $E = e^{-\sigma^2(a^2+b^2)/2}$ and
 
 $$
-\partial_{xx} = -a^2 E u, \qquad
-\partial_{xy} = ab\,E \sin a(k+\tfrac12)\sin b(l+\tfrac12), \qquad
-\partial_{yy} = -b^2 E u .
+H_{ii} = -a^2 E u, \qquad
+H_{ij} = ab\,E \sin a(k+\tfrac12)\sin b(l+\tfrac12), \qquad
+H_{jj} = -b^2 E u .
 $$
 
 ```{code-cell} ipython3
@@ -858,7 +868,7 @@ show_table(pd.DataFrame(rows))
 ```
 
 Route A sits on a floor of a few per cent that no amount of smoothing removes.
-Route B is a tenth of a per cent out above `sigma = 1` — fifty times better —
+Route B is a tenth of a per cent out above $\sigma = 1$ — fifty times better —
 and falls apart below it, by four orders of magnitude.
 
 The floor has a clean explanation. `np.gradient` uses the central difference
@@ -888,7 +898,7 @@ is why route A's column is flat.
 
 This is the case for the switch, and `hessian_matrix` has a
 `use_gaussian_derivatives` argument that makes it, with a `FutureWarning`
-announcing that route B will become the default. Above `sigma = 1` the argument
+announcing that route B will become the default. Above $\sigma = 1$ the argument
 is unanswerable — route B is within a tenth of a percent where route A is wrong
 by 2 to 5%, a gap of nearly two orders of magnitude that does not close at any
 scale.
@@ -902,12 +912,12 @@ An independent standard does not cancel it. The number is small either way; the
 point is that a reference built from the method under test cannot measure the
 method under test.
 
-Below `sigma = 1` it reverses, and badly. That is the next section.
+Below $\sigma = 1$ it reverses, and badly. That is the next section.
 
 ## 5. The two-pass solution, and why it was chosen
 
 The naive form of route B is to ask SciPy for a second-order derivative
-directly, `order=[2, 0]`. Doing so fails at small `sigma` in a way that is easy
+directly, `order=[2, 0]`. Doing so fails at small $\sigma$ in a way that is easy
 to see and hard to argue with: the operator responds to an image with no
 structure at all. A second derivative must return 0 on a constant and 1 on
 `r**2 / 2`:
@@ -924,7 +934,7 @@ for sigma in (0.5, 0.7, 1.0, 1.5):
 show_table(pd.DataFrame(rows), floatfmt=".4f")
 ```
 
-At `sigma = 0.5` a flat field reads as curvature of `-0.56`. The cause is
+At $\sigma = 0.5$ a flat field reads as curvature of `-0.56`. The cause is
 sampling: the kernel is built by evaluating the continuous second derivative of
 a Gaussian on the integer grid, and at half a pixel wide that formula swings
 through its whole range between one sample and the next. The positive flanks no
@@ -939,7 +949,7 @@ derivative must meet:
     sum(k * x**2) / 2  ==  1        exact on f = x**2 / 2
 ```
 
-At small `sigma` the sampled G'' breaks both.
+At small $\sigma$ the sampled G'' breaks both.
 
 ```{code-cell} ipython3
 def sampled_g2(sigma, truncate=8):
@@ -1012,10 +1022,10 @@ fig.suptitle("1-D moment failures of the sampled second-derivative kernel",
 fig.tight_layout()
 ```
 
-At `sigma = 0.5` the kernel sums to −0.56, so a constant comes back as that
+At $\sigma = 0.5$ the kernel sums to −0.56, so a constant comes back as that
 same number (middle row). The second moment is 1.34 instead of 1, and the
 non-zero sum also folds a multiple of `x²/2` into the response, so the bottom
-row bows instead of sitting on the dashed line at 1. By `sigma = 1.5` both
+row bows instead of sitting on the dashed line at 1. By $\sigma = 1.5$ both
 moments are already right to the printed precision. The 2-D picture is the same
 zeroth-moment leak, drawn as an image:
 
@@ -1050,8 +1060,8 @@ decision:
 It works, and for a reason worth stating plainly: a **first**-derivative kernel
 is odd, `k[-n] == -k[n]`, so its coefficients cancel in pairs and it sums to zero
 by symmetry no matter how coarsely it is sampled. Composing two of them never
-asks SciPy for the even kernel that leaks. Each pass uses `sigma / sqrt(2)`,
-because two Gaussians of that width compose to one of width `sigma`.
+asks SciPy for the even kernel that leaks. Each pass uses $\sigma/\sqrt{2}$,
+because two Gaussians of that width compose to one of width $\sigma$.
 
 ```{code-cell} ipython3
 def two_pass(image, sigma, mode="nearest"):
@@ -1077,7 +1087,7 @@ show_table(pd.DataFrame(rows), floatfmt=".4f")
 ```
 
 The response to a constant is now exactly zero at every scale, which is what the
-change was for. The quadratic column shows what it cost: at `sigma = 0.5` the
+change was for. The quadratic column shows what it cost: at $\sigma = 0.5$ the
 scheme reports 8% of the curvature that is there. The leak is gone and the gain
 has collapsed in its place.
 
@@ -1096,7 +1106,7 @@ The diagnosis is right and the remedy does not follow from it. A sampled
 Gaussian derivative decays like a Gaussian, not like a sinc, so the far taps a
 wide window keeps are not small-but-helpful — they are zero, and the moments a
 narrow window gets wrong a wide one gets wrong identically. (The shipped guard
-applies to the *first*-order passes at `sigma / sqrt(2)`; the second-derivative
+applies to the *first*-order passes at $\sigma/\sqrt{2}$; the second-derivative
 taps below make the same point more directly, because that is the kernel whose
 leak the two-pass scheme was written to avoid.)
 
@@ -1155,7 +1165,7 @@ rather than eight. Section 7 removes the reason for it.
 ## 6. The two-pass solution against the standard
 
 The scheme is what `hessian_matrix` ships today. Measured against the standard,
-it is good in the interior above `sigma = 1`, and it has two faults that the
+it is good in the interior above $\sigma = 1$, and it has two faults that the
 tests in section 5 could not see.
 
 ```{code-cell} ipython3
@@ -1183,9 +1193,9 @@ for sigma in (0.5, 1.0, 1.5, 3.0):
 show_table(pd.DataFrame(rows))
 ```
 
-**The first fault is at the border**, and it does not shrink with `sigma`. From
-`sigma = 1.5` upwards the interior is exact and the border is still about a
-fifth of the peak wrong — roughly 19% at `sigma = 1.5` and `3`, of the same
+**The first fault is at the border**, and it does not shrink with $\sigma$. From
+$\sigma = 1.5$ upwards the interior is exact and the border is still about a
+fifth of the peak wrong — roughly 19% at $\sigma = 1.5$ and `3`, of the same
 order at larger scales.
 
 ```{code-cell} ipython3
@@ -1276,7 +1286,7 @@ axis is then touched once, so the boundary rule is applied once, and the mixed
 element has no first-or-second choice to get wrong.
 
 That is route B again, and it brings back route B's problem: the even kernel
-leaks at small `sigma`. So repair the kernel.
+leaks at small $\sigma$. So repair the kernel.
 
 **What a discrete second derivative must do.** Two conditions, both statements
 about the operator at zero frequency:
@@ -1352,12 +1362,12 @@ for sigma in (0.4, 0.5, 1.0, 1.5, 3.0):
 show_table(pd.DataFrame(rows))
 ```
 
-From `sigma = 1.5` upwards the one-pass column is zero in both places: the
+From $\sigma = 1.5$ upwards the one-pass column is zero in both places: the
 border band of about a fifth of the peak becomes floating-point noise, and the
-interior stays exact. At `sigma = 1` the worst error falls from 19% to 1.8%, and
+interior stays exact. At $\sigma = 1$ the worst error falls from 19% to 1.8%, and
 the interior error — the lost gain of section 5 — falls with it.
 
-Below `sigma = 1` the one-pass scheme is far better than the two-pass one, 18%
+Below $\sigma = 1$ the one-pass scheme is far better than the two-pass one, 18%
 against 98%, and is not *good*. Its remaining error is no longer at the border:
 the worst and interior figures are now the same number, so what is left is the
 aliasing residual, spread across the image. Correcting the moments does not
@@ -1441,7 +1451,7 @@ for sigma in (0.5, 1.0, 1.5, 3.0):
 show_table(pd.DataFrame(rows), floatfmt=".2f")
 ```
 
-Faster as well as more accurate, and dramatically so below `sigma = 1`, because
+Faster as well as more accurate, and dramatically so below $\sigma = 1$, because
 the guard that made the kernel a hundred taps wide is no longer needed.
 
 **What this does not fix.** Correcting the moments does not undo the aliasing.
@@ -1450,7 +1460,7 @@ choice of coefficients unfolds it. What the two conditions do is pin the
 operator to the ideal at zero frequency, which removes the two errors that are
 wrong for *every* image — a response to constants, and the wrong gain on smooth
 features. A residual remains at high frequency and grows toward Nyquist. It
-matters least where the method is used, because smoothing at scale `sigma` is
+matters least where the method is used, because smoothing at scale $\sigma$ is
 precisely what removes the content the residual would affect.
 
 ```{code-cell} ipython3
@@ -1732,9 +1742,9 @@ Not different from the new ones — wrong, by about a fifth of the peak response
 against a reference that applies the documented boundary rule once and is agreed
 before either method is run.
 
-**In the interior below `sigma = 1`, the old values lose gain.** Section 5
+**In the interior below $\sigma = 1$, the old values lose gain.** Section 5
 measured the two-pass scheme reporting 8% of the curvature of a quadratic at
-`sigma = 0.5`. The corrected kernel reports it exactly. A filter sweeping small
+$\sigma = 0.5$. The corrected kernel reports it exactly. A filter sweeping small
 scales was reading real structure as nearly flat.
 
 **The `order` argument stops meaning two things.** Today `order='rc'` and
@@ -1768,7 +1778,7 @@ correction, and it is not a reason to prefer it.
 ### What is still open
 
 The corrected kernel is not the last word. It fixes the operator at zero
-frequency and leaves a residual that grows toward Nyquist, so at `sigma` well
+frequency and leaves a residual that grows toward Nyquist, so at $\sigma$ well
 below 1 no kernel repair rescues the method — only a larger scale, a finer
 grid, or a different family of method.
 
@@ -1776,7 +1786,7 @@ That third option is the one the cited paper argues for, and this notebook has
 been using it as a yardstick without putting it on trial. Rey-Otero and
 Delbracio conclude that "the only method that allows to compute accurately the
 Gaussian scale-space is the Fourier based convolution", and that sampled
-Gaussians are sound only above `sigma` about 0.8 — which is section 7's
+Gaussians are sound only above $\sigma$ about 0.8 — which is section 7's
 residual, reached independently and four years earlier. `dct_hessian` is not
 merely a standard: it is a candidate implementation, and on the evidence here
 it is the accurate one at every scale.
@@ -1786,7 +1796,7 @@ measured. It is global rather than separable and local, so cost scales as
 `N log N` over the whole image rather than with the kernel, and it cannot
 offer `mode`: the boundary rule is half-sample reflection by construction,
 where callers currently choose among five. Whether a spectral path should exist
-alongside the kernel one, for the small-`sigma` regime where kernels cannot be
+alongside the kernel one, for the small-$\sigma$ regime where kernels cannot be
 repaired, is a real question and is left open here rather than answered. `hessian_matrix_det(approximate=True)` and `blob_doh` route through
 box filters over integral images and are untouched by any of this; they have
 their own border defect, larger than this one, described in `on_blob_dog.md`.
