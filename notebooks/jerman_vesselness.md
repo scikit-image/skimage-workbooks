@@ -15,8 +15,7 @@ kernelspec:
 ---
 
 [PR 8074](https://github.com/scikit-image/scikit-image/pull/8074) adds a fifth
-ridge filter, from [Jerman *et al.*
-(2016)](https://doi.org/10.1109/TMI.2016.2550102). `on_frangi.md` and
+ridge filter, from Jerman *et al.* [@jerman2016enhancement_vascular]. `on_frangi.md` and
 `on_meijering.md` catalogue defects in two of the four already there, so the
 question for a new one is whether it repeats them.
 

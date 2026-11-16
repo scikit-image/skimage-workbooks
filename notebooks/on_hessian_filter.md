@@ -15,8 +15,7 @@ kernelspec:
 
 `skimage.filters.hessian` calls `frangi`, then sets every non-positive pixel
 to 1. The docstring calls the result a filtered image and cites the Hybrid
-Hessian Filter of [Ng, Yap, Costen and Li
-(2014)](https://doi.org/10.1007/978-3-319-16811-1_40).
+Hessian Filter of Ng, Yap, Costen and Li [@cremers_automatic_2015].
 
 Two questions follow. Does the returned array rank ridges above non-ridges?
 Is it the cited algorithm? The answer to both is no.
@@ -541,8 +540,7 @@ paper its own panel (b), and compare each stage against the panel it printed.
 :::{attention} Provenance
 The panels under `notebooks/hhf_fig2_fixtures/` are extracted from Fig. 2 of
 Ng, Yap, Costen and Li, "Automatic Wrinkle Detection using Hybrid Hessian
-Filter", ACCV 2014
-([doi:10.1007/978-3-319-16811-1_40](https://doi.org/10.1007/978-3-319-16811-1_40)),
+Filter", ACCV 2014 [@cremers_automatic_2015],
 © Springer International Publishing. The authors' accepted manuscript carries
 [CC BY-NC-ND 4.0](https://creativecommons.org/licenses/by-nc-nd/4.0/).
 
@@ -911,7 +909,7 @@ vesselness formulations.
 headline accuracy. Panel (f) is the paper's output, not annotated truth, so
 agreement with it shows that the implementation is faithful, not that the
 algorithm is accurate. An independent evaluation that obtained the authors' own
-code ([Osman et al. 2020](https://doi.org/10.3390/jimaging6040017)) reports a
+code [@elbashir2020evaluation_wrinkle] reports a
 mean JSI of 31.69% for HHF on FERET, against the 75.67% reported in the paper.
 
 §7 also rests on one image, reproduced through print and JPEG at 845x117, where

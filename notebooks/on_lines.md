@@ -512,7 +512,7 @@ point arithmetic that Bresenham avoids, and buys two things Bresenham cannot
 offer — any number of dimensions, and endpoints that need not be integers.
 
 It is also the textbook definition of digitising a curve.
-[Knuth (1990)](https://arxiv.org/abs/cs/9301112) sets it out for any parametric
+Knuth [@knuth1993note_digitized] sets it out for any parametric
 path `z(t) = (x(t), y(t))` as
 
 ```
@@ -982,7 +982,7 @@ stepping late as the segment moves, because `np.round` sends `0.5` to `0` but
 Naming the ends in the other order should draw the same pixels.
 
 This is the older of the two questions.
-[Bresenham (1987)](https://ieeexplore.ieee.org/document/4057178) devotes a paper
+Bresenham [@bresenham1987ambiguities_incremental] devotes a paper
 to it: an implementation must "resolve *ties* in which two candidate grid points
 have an equal error metric", and "equal error metric ambiguity can permit
 algorithmic selection of raster points for a line to differ depending on the
@@ -1186,7 +1186,7 @@ Every comparison so far has been between hard-edged lines. Softening the edges
 is a separate algorithm, and here the three libraries part company.
 
 `skimage.draw.line_aa` implements the method of
-[Zingl (2012)](http://members.chello.at/easyfilter/Bresenham.pdf), an extension
+Zingl [@zingl2016rasterizing_algorithm], an extension
 of Bresenham that carries the error term into a coverage value. OpenCV's
 `LINE_AA` uses Gaussian filtering, by its own description. Pillow's `ImageDraw`
 has no anti-aliased line at all: it draws in two levels, and the usual advice
@@ -2094,10 +2094,10 @@ they are different algorithms with different guarantees, and the naming is what
 needs fixing rather than the count of functions.
 
 The two papers Stéfan linked in that thread are the ones cited above.
-[Bresenham (1987)](https://ieeexplore.ieee.org/document/4057178) is the source
+Bresenham [@bresenham1987ambiguities_incremental] is the source
 for section 6: equal-error ties let the chosen pixels "differ depending on the
 direction it is drawn".
-[Knuth (1990)](https://arxiv.org/abs/cs/9301112) supplies the digitisation rule
+Knuth [@knuth1993note_digitized] supplies the digitisation rule
 `line_nd` implements, the explicit statement that it is undefined on a tie, and
 the closing requirement that a renderer be symmetric.
 

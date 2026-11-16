@@ -1,8 +1,6 @@
 ---
 title: 'On the Laplacian pyramid'
 date: 2026-09-22
-bibliography:
-  - on_pyramid_laplacian.bib
 kernelspec:
   display_name: Python 3 (ipykernel)
   language: python
@@ -21,7 +19,7 @@ https://github.com/scikit-image/scikit-image/pull/8306 | Proposed fix, closed; c
 2026-09-22 | claude-code:claude-fable-5-1 | Create workbook
 :::
 
-`skimage.transform.pyramid_laplacian` cites Burt and Adelson [@burt1983]. Their
+`skimage.transform.pyramid_laplacian` cites Burt and Adelson [@burt_laplacian_1983]. Their
 Laplacian pyramid is invertible: the layers, plus one small low-pass residual,
 rebuild the input exactly. A user report on the image.sc forum
 [@pascal2025]
@@ -31,7 +29,7 @@ the correct construction is, and whether the two pull requests that tried to fix
 it are correct.
 
 Notation follows Torralba, Isola and Freeman, *Foundations of Computer Vision*,
-chapter 23 [@torralba2024]. $\mathbf{g}_k$ is level $k$ of the Gaussian
+chapter 23 [@torralba_foundations_2024]. $\mathbf{g}_k$ is level $k$ of the Gaussian
 pyramid, $\mathbf{l}_k$ is level $k$ of the Laplacian pyramid, and bold capitals
 are linear operators. Arrays are in `(row, column)` order.
 

@@ -641,7 +641,7 @@ which is why the gallery earns its keep next to the supersampler.
 ### 3.6 DCT continuous Gaussian (IPOL 2016)
 
 The supersampler approximates continuous convolution by refining the grid.
-[Rey-Otero and Delbracio (IPOL 2016)](https://www.ipol.im/pub/art/2016/117/)
+Rey-Otero and Delbracio [@rey_otero2016computing_exact]
 do the continuous convolution exactly under a stated interpolant (their
 Algorithm 2): type-II DCT of the $M\times N$ image, weight each coefficient
 by

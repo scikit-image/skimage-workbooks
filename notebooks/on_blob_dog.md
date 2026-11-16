@@ -204,7 +204,7 @@ is the `sigma_ratio` approximation, behaving as the theory says it should. It is
 not monotone in `k`, because changing `sigma_ratio` also changes which discrete
 scales get computed. `sigma_ratio`
 defaults to 1.6, the value
-[Lowe uses in SIFT](https://www.cs.ubc.ca/~lowe/papers/ijcv04.pdf), chosen to
+Lowe uses in SIFT [@lowe2004distinctive_image], chosen to
 trade accuracy for the number of scales that must be computed.
 
 So `blob_dog`'s error is a parameter the caller controls, documented in the
@@ -219,7 +219,7 @@ the sum of everything above and to the left, so the sum over any rectangle costs
 four lookups regardless of its size. It then approximates each second derivative
 with a small number of rectangles.
 
-That is [SURF](https://doi.org/10.1007/11744023_32), and the point of it is that
+That is SURF [@bay2006surf_speeded], and the point of it is that
 the cost does not grow with `sigma`. The docstring says so directly: "Computation
 of Determinant of Hessians is independent of the standard deviation."
 

@@ -113,8 +113,7 @@ on a dark background the cross-section curves sharply downward and the
 along-line direction is flat, so $\lambda_2 \ll 0$ and $\lambda_1 \approx 0$.
 For a blob both curve, so $\lambda_1 \approx \lambda_2$. In 3-D, the paper
 also uses the third eigenvalue and a plate-sensitivity ratio $R_A$; that factor
-is absent from the 2-D expression below. [Frangi *et al.*
-(1998)](https://doi.org/10.1007/BFb0056195) turn the 2-D case into two
+is absent from the 2-D expression below. Frangi *et al.* [@frangi1998multiscale_vessel] turn the 2-D case into two
 dimensionless numbers and one absolute one:
 
 $$
@@ -653,7 +652,7 @@ show_table(pd.DataFrame(selection).set_index("true width w"))
 ```
 
 `σ^1.5` selects the ridge's own width and `σ^2` selects $w\sqrt2$ — exactly the
-two calibrations `on_meijering.md` §5 derives from Lindeberg (1998) §5.6.1,
+two calibrations `on_meijering.md` §5 derives from Lindeberg [@lindeberg1998edge_detection] §5.6.1,
 now measured on Frangi's $S$ rather than on Meijering's eigenvalue. The choice
 of exponent is the same open question in both filters.
 

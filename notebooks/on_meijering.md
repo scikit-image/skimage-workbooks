@@ -23,7 +23,7 @@ measures what the multiscale normalisation does to **detection** and to
 Coordinates are array order. Bright ridges use `black_ridges=False`. The `alpha`
 sign is settled in `meijering_alpha.md`; this notebook uses the paper value
 `alpha = -1/3` unless a cell says otherwise. The paper is
-[Meijering *et al.*, Cytometry A 58:167-176 (2004)](https://doi.org/10.1002/cyto.a.20022);
+Meijering *et al.* [@meijering_design_2004];
 the authors' implementation is NeuronJ.
 
 ## 1. Setup
@@ -765,7 +765,7 @@ so fidelity is checked against the paper's formula and the NeuronJ closed form,
 not against its figures. ITK, DIPlib and OpenCV have no Meijering $\rho$ to
 compare, so §9 compares their scale policy from source, not their output. The
 $\alpha$ mechanics live in `meijering_alpha.md`; the $\gamma$ calibration follows
-Lindeberg (1998) §5.6.1.
+Lindeberg [@lindeberg1998edge_detection] §5.6.1.
 
 ```{code-cell} ipython3
 print(f"scikit-image {ski.__version__}")

@@ -16,8 +16,7 @@ kernelspec:
 
 `skimage.filters.meijering` takes an `alpha` argument, documents it as "shaping
 filter constant, that selects maximally flat elongated features", and defaults
-it to `1 / (ndim + 1)`. [Meijering *et al.*
-(2004)](https://doi.org/10.1002/cyto.a.20022) derive the value $-1/3$ for 2-D.
+it to `1 / (ndim + 1)`. Meijering *et al.* [@meijering_design_2004] derive the value $-1/3$ for 2-D.
 The docstring says $-1/(\mathrm{ndim}+1)$. The code says $+1/(\mathrm{ndim}+1)$.
 
 This notebook works through the paper's derivation, reproduces its figure, and
