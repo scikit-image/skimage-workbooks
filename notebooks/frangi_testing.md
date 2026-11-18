@@ -13,7 +13,12 @@ kernelspec:
   language: python
 ---
 
+:::{related}
+https://github.com/scikit-image/scikit-image/pull/8335 | Applies the repairs; this notebook is its testing strategy
+:::
+
 :::{changelog}
+2026-11-18 | cursor:composer | Add related link to PR 8335
 2026-11-13 | claude-code:claude-opus-5-5 | Add 1D illustration of scale normalisation on Gaussian bars
 2026-09-22 | Stefan van der Walt, claude-code:claude-opus-5 | Add title and creation date; quote title
 2026-09-18 | Matthew Brett | Create workbook
