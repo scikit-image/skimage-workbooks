@@ -1,4 +1,8 @@
 ---
+title: 'Testing the one-pass Hessian'
+date: 2026-09-17
+options:
+  updated: 2026-11-18
 jupytext:
   formats: ipynb,md:myst
   text_representation:
@@ -15,6 +19,9 @@ kernelspec:
 :::{changelog}
 2026-11-21 | cursor:composer | Fix truncate typo in order-2 taps demo cell
 2026-09-22 | claude-code:claude-opus-5 | Create workbook
+2026-11-18 | claude-code:claude-opus-5-5 | Add §5.3, a test of the frequency response; fit the sums of §5.2 at run time
+2026-11-17 | claude-code:claude-opus-5-5 | Add §5.2, a closed-form test on sums of Gaussians fitted to photographs
+2026-09-17 | claude-code:claude-opus-5 | Create workbook
 :::
 
 `hessian_matrix` builds each element of the Hessian. Up to scikit-image 0.26 it
@@ -32,8 +39,10 @@ This notebook asks the narrower question:
 The answer is five tests. None of them needs a reference implementation or any
 of the scale-space literature. One (the boundary rule) is bit-identical when it
 passes; the others use floors argued in §7.5. A single interior Gaussian blob
-is enough for the closed-form check — multi-Gaussian scenes belong in
-`hessian_review.md`, where they validate references, not here.
+is the simplest closed-form check. §5.2 adds sums of Gaussians fitted to
+photographs, which also have a closed form and are a harder test: the blob
+flatters the one-pass scheme at σ = 1. §5.3 measures the frequency response
+of each scheme, which separates the error by scale.
 
 §1 transcribes both schemes rather than importing either, so the tests do not
 depend on which release is installed. §1.1 reports which scheme the installed
@@ -253,7 +262,7 @@ show_table(pd.DataFrame(
 The gap is zero where a transcription is exact, so the table reads as an
 identification and not as a tolerance.
 
-§2 to §8 use the transcriptions alone, so the five tests say the same thing in
+§2 to §8 use the transcriptions alone, so the tests say the same thing in
 either environment. §4.1 to §4.3 are the exception: they call the installed
 `meijering`, `frangi` and `sato`, with only the Hessian replaced, so their
 numbers carry the installed filters' own arithmetic.
@@ -789,6 +798,360 @@ everywhere else. That is the line `taps` carries, and the reason the constant
 test is parametrised down to σ = 0.1 rather than stopping where the pictures
 look sensible.
 
+### 5.2 Test 4b — photographs made of Gaussians
+
+The blob is one shape at one scale, and most of its frame is far field.
+`on_gaussian_sum_images.md` builds a harder closed form: sums of about $10^5$
+isotropic Gaussians, at widths from 1.5 to 16 pixels, fitted to `camera`,
+`coins` and greyscale `astronaut`. Smoothing a Gaussian gives a Gaussian, so
+each sum has an exact Hessian at every σ, and the edges of the photographs
+give the mixed element work at every orientation.
+
+```{code-cell} ipython3
+import gaussian_sum as gs
+
+PHOTOGRAPHS = {"camera": ski.data.camera(), "coins": ski.data.coins(),
+               "astronaut": ski.color.rgb2gray(ski.data.astronaut())}
+
+
+def fit_sum(image):
+    """Fit a sum of Gaussians to `image`; return its levels and shape."""
+    image = ski.util.img_as_float(image)
+    return gs.fit(image)[0], image.shape
+
+
+SUMS = {name: fit_sum(image) for name, image in PHOTOGRAPHS.items()}
+
+
+def sum_error(method, sigma, name, margin=None):
+    """Worst departure from one sum's exact Hessian, relative to its peak."""
+    levels, shape = SUMS[name]
+    truth = gs.hessian(levels, shape, sigma)
+    inner = interior(shape, sigma) if margin is None else (slice(margin, -margin),) * 2
+    scale = max(np.abs(t[inner]).max() for t in truth)
+    return max(np.abs(h[inner] - t[inner]).max()
+               for h, t in zip(method(gs.render(levels, shape), sigma), truth)) / scale
+
+
+def worst_sum_error(method, sigma, margin=None):
+    """`sum_error`, worst over the three sums."""
+    return max(sum_error(method, sigma, name, margin) for name in SUMS)
+
+
+show_table(pd.DataFrame(
+    [{"sigma": sigma,
+      **{f"{name}, blob": f"{blob_error(f, sigma):.1e}" for name, f in METHODS},
+      **{f"{name}, photographs": f"{worst_sum_error(f, sigma):.1e}"
+         for name, f in METHODS}}
+     for sigma in (0.5, 1.0, 2.0, 4.0)]), index="sigma")
+```
+
+At σ = 1 the one-pass scheme is at $1.1 \times 10^{-6}$ on the blob and
+$3.2 \times 10^{-4}$ on the photographs, about 300 times worse. The blob
+tolerance of `1e-5` passes at σ = 1, and the same tolerance on the photographs
+fails. At σ = 0.5 the photographs are about 30 times harder than the blob. At
+σ ≥ 2 the one-pass scheme is at the rounding floor on both. The two-pass
+scheme is at $1.2 \times 10^{-9}$ on the photographs at σ = 2, against
+$1.7 \times 10^{-14}$ on the blob: the residue of its passes at σ/√2 shows on
+the photographs and not on the blob.
+
+Where the error lies on the `camera` sum at σ = 1:
+
+```{code-cell} ipython3
+levels, shape = SUMS["camera"]
+photograph_sum = gs.render(levels, shape)
+truth = gs.hessian(levels, shape, 1.0)
+inner = interior(shape, 1.0)
+scale = max(np.abs(t[inner]).max() for t in truth)
+gap = np.max([np.abs(h - t)[inner] for h, t in zip(one_pass(photograph_sum, 1.0), truth)],
+             axis=0) / scale
+
+fig, axes = plt.subplots(1, 2, figsize=(7.6, 3.6), layout="constrained")
+bare(axes[0], "camera sum").imshow(photograph_sum[inner], cmap="gray", vmin=0, vmax=1)
+shown = bare(axes[1], "one-pass, worst element error / peak, σ = 1").imshow(
+    np.maximum(gap, 1e-9), cmap="Blues", norm=LogNorm(1e-9, 1e-3))
+fig.colorbar(shown, ax=axes[1], fraction=0.046).outline.set_visible(False)
+```
+
+The error is about $10^{-5}$ of the peak over most of the frame. It rises
+towards $10^{-4}$ on edges and texture: the outline of the coat, the camera,
+the buildings and the grass. The blob has no structure near the pixel scale,
+so it cannot show this.
+
+Is the residue a property of the samples or of the kernel? A spectral Hessian,
+in the manner of Rey-Otero and Delbracio's exact Gaussian smoothing
+[@rey_otero2016computing_exact], uses the same samples with a global Fourier
+derivative:
+
+```{code-cell} ipython3
+def spectral_hessian(image, sigma):
+    """Exact Hessian of the mirror-extended, band-limited interpolant of `image`."""
+    M, N = image.shape
+    extended = np.block([[image, image[:, ::-1]], [image[::-1, :], image[::-1, ::-1]]])
+    spectrum = np.fft.fft2(extended)
+    fr, fc = np.fft.fftfreq(2 * M)[:, None], np.fft.fftfreq(2 * N)[None, :]
+    wr, wc = 2 * np.pi * fr, 2 * np.pi * fc
+    smooth = np.exp(-sigma**2 * (wr**2 + wc**2) / 2)
+    # An odd derivative has no real value at the Nyquist frequency.
+    dr = np.where(np.abs(fr) == 0.5, 0, 1j * wr)
+    dc = np.where(np.abs(fc) == 0.5, 0, 1j * wc)
+    return [np.real(np.fft.ifft2(spectrum * smooth * d))[:M, :N]
+            for d in ((1j * wr) ** 2, dr * dc, (1j * wc) ** 2)]
+
+
+SPECTRAL_MARGIN = 60   # the mirror extension does not continue a sum
+
+
+def spectral_blob_error(sigma):
+    """`blob_error` for the spectral Hessian."""
+    blob, truth = blob_and_truth(sigma)
+    inner = interior(blob.shape, sigma)
+    scale = max(np.abs(t).max() for t in truth)
+    return max(np.abs(h[inner] - t[inner]).max()
+               for h, t in zip(spectral_hessian(blob, sigma), truth)) / scale
+
+
+show_table(pd.DataFrame(
+    [{"sigma": sigma,
+      "spectral, blob": f"{spectral_blob_error(sigma):.1e}",
+      "spectral, photographs":
+          f"{worst_sum_error(spectral_hessian, sigma, SPECTRAL_MARGIN):.1e}",
+      "one-pass, photographs":
+          f"{worst_sum_error(one_pass, sigma, SPECTRAL_MARGIN):.1e}"}
+     for sigma in (0.5, 1.0)]), index="sigma")
+```
+
+At σ = 0.5 the spectral Hessian is at $9 \times 10^{-15}$ on the blob and
+$1.4 \times 10^{-5}$ on the photographs, where the one-pass scheme is at
+$8.8 \times 10^{-2}$. So the samples hold the information, and the residue
+below σ = 1 belongs to the one-pass kernel, a sampled kernel truncated at 8σ.
+§5 says that no repair of a sampled kernel recovers it. A global Fourier
+derivative does, at the cost of a transform of the mirrored image and an error
+near the border, where the mirror does not continue the image.
+
+The suite takes its tolerances for this test from these numbers. At σ ≥ 2 the
+one-pass scheme is at or below $8.4 \times 10^{-13}$, which is rounding over
+about $10^5$ Gaussians, so the gate is `1e-10`. At σ = 1 it is at
+$3.2 \times 10^{-4}$, so the gate is `1e-3`. That gate catches a regression in
+the kernel's residue. It is not a claim of accuracy.
+
++++
+
+### 5.3 Test 4c — the frequency response
+
+A closed form tests the frequencies that its picture contains. The blob and
+the photographs contain little energy near the Nyquist frequency, so they
+cannot show whether a scheme buys accuracy at one scale with error at another.
+
+All three schemes are linear. Away from the border, they treat every position
+the same. A filter of this kind is fully described by its frequency response:
+the factor by which it multiplies a sinusoid of each frequency. A sinusoid
+below the Nyquist frequency is fully determined by its samples, so its exact
+smoothed Hessian is known at every σ. For $\cos(\omega \cdot x)$ the exact
+smoothed Hessian is
+
+$$
+H(x) = -\omega\,\omega^T e^{-\sigma^2 |\omega|^2 / 2} \cos(\omega \cdot x).
+$$
+
+Unlike the photographs of §5.2, this test has no floor from the samples. One
+impulse gives the response at every frequency at once: the Fourier transform
+of a filter's output on an impulse is its frequency response.
+
+The comparator is the finite-difference route, which `hessian_matrix` uses
+when `use_gaussian_derivatives=False`. It smooths with `gaussian`, truncated
+at 4σ, and then applies `np.gradient` twice.
+
+```{code-cell} ipython3
+def finite_difference(image, sigma, mode="nearest", cval=0):
+    """`use_gaussian_derivatives=False`: smooth, then central differences twice."""
+    smoothed = ndi.gaussian_filter(np.asarray(image, dtype=float), sigma,
+                                   mode=mode, cval=cval, truncate=4)
+    gradients = np.gradient(smoothed)
+    return [np.gradient(gradients[a], axis=b)
+            for a, b in combinations_with_replacement(range(smoothed.ndim), 2)]
+
+
+got = hessian_matrix(PHOTO, sigma=1.5, mode="nearest", use_gaussian_derivatives=False)
+print("gap to the installed finite-difference route:",
+      max(np.abs(a - b).max() for a, b in zip(got, finite_difference(PHOTO, 1.5))))
+```
+
+The helpers take the response of a scheme from an impulse at the centre of a
+257 × 257 frame. They compare it with the ideal response of each element,
+$-\omega_r^2 g$, $-\omega_r \omega_c g$ and $-\omega_c^2 g$, with
+$g = e^{-\sigma^2 |\omega|^2 / 2}$. The error at each frequency is the worst
+over the three elements, divided by the peak of the ideal $H_{rr}$, as in §5.2.
+
+```{code-cell} ipython3
+RESPONSE_SIZE = 257
+_w = 2 * np.pi * np.fft.fftfreq(RESPONSE_SIZE)
+WR, WC = np.meshgrid(_w, _w, indexing="ij")
+RADIUS = np.hypot(WR, WC) / np.pi          # |omega| as a fraction of Nyquist
+
+
+def response(method, sigma):
+    """Frequency response of each Hessian element, from an impulse."""
+    impulse = np.zeros((RESPONSE_SIZE, RESPONSE_SIZE))
+    impulse[RESPONSE_SIZE // 2, RESPONSE_SIZE // 2] = 1
+    # Every kernel is even or odd, so the imaginary part is rounding.
+    return [np.real(np.fft.fft2(np.fft.ifftshift(h)))
+            for h in method(impulse, sigma, mode="constant")]
+
+
+def ideal_response(sigma):
+    """Frequency response of the exact smoothed Hessian elements."""
+    g = np.exp(-sigma**2 * (WR**2 + WC**2) / 2)
+    return [-WR**2 * g, -WR * WC * g, -WC**2 * g]
+
+
+def response_error(method, sigma):
+    """Worst element error at each frequency, relative to the ideal peak."""
+    truth = ideal_response(sigma)
+    scale = np.abs(truth[0]).max()
+    return np.max([np.abs(r - t) for r, t in zip(response(method, sigma), truth)],
+                  axis=0) / scale
+
+
+def band_error(method, sigma, band):
+    """`response_error`, worst over |omega| <= band * pi, all orientations."""
+    return response_error(method, sigma)[RADIUS <= band].max()
+
+
+RESPONSE_METHODS = (("finite differences", finite_difference, C_THREE),
+                    (METHODS[0][0], METHODS[0][1], C_TWO),
+                    (METHODS[1][0], METHODS[1][1], C_ONE))
+```
+
+The figure shows the worst error at each $|\omega|$, over all orientations, up
+to the Nyquist frequency:
+
+```{code-cell} ipython3
+edges = np.linspace(0, 1, 41)
+centres = (edges[:-1] + edges[1:]) / 2
+fig, axes = plt.subplots(1, 3, figsize=(8.4, 3.0), sharey=True, layout="constrained")
+for ax, sigma in zip(axes, (0.5, 1.0, 2.0)):
+    for name, method, colour in RESPONSE_METHODS:
+        error = response_error(method, sigma)
+        envelope = [error[(RADIUS >= a) & (RADIUS < b)].max()
+                    for a, b in zip(edges[:-1], edges[1:])]
+        ax.semilogy(centres, np.maximum(envelope, 1e-16), color=colour, lw=2,
+                    label=name)
+    recede(ax, f"σ = {sigma}")
+    ax.set_xlabel("|ω| / Nyquist")
+    ax.set_xlim(0, 1)
+    ax.set_ylim(1e-16, 2)
+axes[0].set_ylabel("error / ideal peak")
+axes[0].legend(frameon=False, fontsize=8, loc="lower right")
+```
+
+The same numbers, as the worst error up to three band limits:
+
+```{code-cell} ipython3
+BANDS = (0.25, 0.5, 1.0)
+show_table(pd.DataFrame(
+    [{"scheme": name, "sigma": sigma,
+      **{f"|ω| ≤ {band}π": f"{band_error(method, sigma, band):.1e}" for band in BANDS}}
+     for name, method, _ in RESPONSE_METHODS for sigma in (0.5, 1.0, 2.0, 4.0)]),
+    index="scheme")
+```
+
+What the response shows:
+
+- The finite-difference route does not converge between σ = 0.5 and σ = 4. `np.gradient` applied twice has
+  the response $-\sin^2\omega$ in place of $-\omega^2$. Smoothing moves the
+  error to lower frequencies, where it stays: at σ = 4 it is still
+  $5.9 \times 10^{-2}$ of the peak.
+- The two-pass scheme at σ = 1 has error $4.1 \times 10^{-2}$ below half the
+  Nyquist frequency, where the one-pass scheme has $4.4 \times 10^{-4}$. At
+  σ = 0.5 the two-pass scheme has error $1.8 \times 10^{-1}$ below a quarter of
+  the Nyquist frequency.
+- The one-pass scheme has no error at low frequencies that pays for accuracy
+  at high frequencies. At σ = 0.5 it has $4.8 \times 10^{-2}$ below half the
+  Nyquist frequency, and at σ ≤ 2 its error grows with frequency. At σ ≥ 2
+  it is at the rounding floor below half the Nyquist frequency.
+
+The one-pass error at σ ≥ 1 has one source: sampling the continuous kernel
+folds its response at $2\pi - \omega$ back onto $\omega$. Along an axis, that
+alias term at the band limit $b\pi$ is
+
+$$
+\frac{(2\pi - b\pi)^2\, e^{-\sigma^2 (2\pi - b\pi)^2 / 2}}{2 / (e \sigma^2)},
+$$
+
+where the denominator is the peak of the ideal $H_{rr}$:
+
+```{code-cell} ipython3
+def alias_estimate(sigma, band):
+    """Size of the sampled kernel's alias at |omega| = band * pi, over the peak."""
+    u = (2 - band) * np.pi
+    return u**2 * np.exp(-sigma**2 * u**2 / 2) / (2 / (np.e * sigma**2))
+
+
+show_table(pd.DataFrame(
+    [{"sigma": sigma, "band": f"{band}π",
+      "one-pass, measured": f"{band_error(one_pass, sigma, band):.1e}",
+      "alias estimate": f"{alias_estimate(sigma, band):.1e}"}
+     for sigma, band in ((1.0, 0.25), (1.0, 0.5), (1.0, 1.0), (2.0, 1.0))]),
+    index="sigma")
+```
+
+The estimate matches the measurement to within 30%, so the one-pass residue
+at σ ≥ 1 is the alias of a sampled kernel and not the moment correction. This
+is the same residue that §5.2 found on the photographs: $3.2 \times 10^{-4}$
+at σ = 1, against $4.4 \times 10^{-4}$ here below half the Nyquist frequency.
+The estimate does not hold at σ = 0.5, where the alias is of the same order
+as the signal.
+
++++
+
+#### 5.3.1 Which ideal
+
+The ideal above assumes that the samples come from a band-limited image. The
+spectral Hessian of §5.2 and the sums make the same assumption.
+Lindeberg's discrete scale space is a second, self-consistent definition
+[@lindeberg1990scalespace_discrete]. It smooths with the kernel
+$e^{-t} I_n(t)$, with $t = \sigma^2$, whose response is
+$e^{-\sigma^2 (1 - \cos\omega)}$ on each axis. It then takes central
+differences, with responses $-(2 - 2\cos\omega)$ and
+$-\sin\omega_r \sin\omega_c$. The two ideals differ by this much:
+
+```{code-cell} ipython3
+def discrete_scale_space_response(sigma):
+    """Frequency response of the Hessian in Lindeberg's discrete scale space."""
+    g = np.exp(-sigma**2 * ((1 - np.cos(WR)) + (1 - np.cos(WC))))
+    return [-(2 - 2 * np.cos(WR)) * g, -np.sin(WR) * np.sin(WC) * g,
+            -(2 - 2 * np.cos(WC)) * g]
+
+
+def ideal_gap(sigma, band):
+    """Worst gap between the two ideals for |omega| <= band * pi, over the peak."""
+    truth = ideal_response(sigma)
+    gap = np.max([np.abs(d - t) for d, t in
+                  zip(discrete_scale_space_response(sigma), truth)], axis=0)
+    return gap[RADIUS <= band].max() / np.abs(truth[0]).max()
+
+
+show_table(pd.DataFrame(
+    [{"sigma": sigma,
+      **{f"|ω| ≤ {band}π": f"{ideal_gap(sigma, band):.1e}" for band in BANDS}}
+     for sigma in (0.5, 1.0, 2.0, 4.0)]), index="sigma")
+```
+
+The two ideals differ by $9 \times 10^{-3}$ to $3 \times 10^{-2}$ even below a
+quarter of the Nyquist frequency. In that band the gap does not shrink from
+σ = 0.5 to σ = 4.
+So a test against one ideal fails any scheme that targets the other. This
+notebook takes the band-limited ideal, because the schemes under test sample
+the continuous Gaussian derivative and the closed forms of §5 and §5.2 are
+continuous. A test for a discrete scale-space Hessian needs the other ideal.
+
+The suite gates this test at three points. At σ = 1, below half the Nyquist
+frequency, the gate is `1e-3`, from the alias of $4.5 \times 10^{-4}$. At
+σ = 2, over the whole band, the gate is `1e-6`, from the alias of
+$1.4 \times 10^{-7}$ at the Nyquist frequency. At σ = 4 the alias is far below
+rounding, and the gate is `1e-10`, as in §5.2.
+
 +++
 
 ## 6. Test 5 — transposing the picture transposes the answer
@@ -964,8 +1327,9 @@ bit-identical; about $10^{-15}$ of the peak measured for the transpose
 (correlating along axis 0 and along axis 1 add in different orders), gated in
 the suite at `1e-12`; a small multiple of the picture's own magnitude for
 constants and quadratics, because the correction imposes a cancellation instead
-of inheriting a symmetry; and a floor no tighter than the aliasing residue for
-the Gaussian at σ ≥ 1, because that residue is real and is not going away.
+of inheriting a symmetry; and, for the closed forms at σ ≥ 1, a floor no
+tighter than the residue of the sampled kernel, which no repair of that kernel
+removes (§5, §5.2).
 
 The middle one is the one that is easy to get wrong. A quadratic's values grow
 as the square of the distance from its centre, so a wider frame carries larger
@@ -1019,6 +1383,18 @@ def test_matches_a_gaussian_blob(method):
         assert blob_error(method, sigma) < 1e-5
 
 
+def test_matches_gaussian_sum_photographs(method):
+    """Against exact sums of Gaussians fitted to three photographs."""
+    for sigma, floor in ((1.0, 1e-3), (2.0, 1e-10), (4.0, 1e-10)):
+        assert worst_sum_error(method, sigma) < floor
+
+
+def test_frequency_response(method):
+    """The response to every frequency matches the exact smoothed Hessian."""
+    for sigma, band, floor in ((1.0, 0.5, 1e-3), (2.0, 1.0, 1e-6), (4.0, 1.0, 1e-10)):
+        assert band_error(method, sigma, band) < floor
+
+
 def test_transposing_the_image_transposes_the_answer(method):
     """A Hessian is a tensor; relabelling the axes is not arithmetic."""
     for sigma in (0.5, 1.0, 2.0):
@@ -1028,6 +1404,7 @@ def test_transposing_the_image_transposes_the_answer(method):
 ```{code-cell} ipython3
 SUITE = [test_boundary_rule_is_applied_once, test_exact_on_a_quadratic,
          test_no_response_to_a_constant, test_matches_a_gaussian_blob,
+         test_matches_gaussian_sum_photographs, test_frequency_response,
          test_transposing_the_image_transposes_the_answer]
 
 
@@ -1047,18 +1424,18 @@ show_table(pd.DataFrame(
      for test in SUITE]), index="test")
 ```
 
-Four of the five fail on the two-pass scheme. The exception is the constant, and
+Six of the seven fail on the two-pass scheme. The exception is the constant, and
 that is not an accident: the two-pass scheme exists because someone noticed that
 a sampled second-derivative kernel responds to a flat image, and built a pair of
 odd first-derivative passes that cannot. It solved the one problem it was aimed
-at and created the other four.
+at and created the others.
 
-Both one-pass schemes pass all five. The short circuit changes no outcome
+Both one-pass schemes pass all seven. The short circuit changes no outcome
 here: the constant test has a floor of `1e-12`, which $10^{-16}$ already meets,
 so the short circuit changes that test's margin and not its result. §4.2 is
 where it matters and §4.3 is why it exists.
 
-These five landed as
+The five tests of §2 to §6 landed as
 `test_hessian_matrix_applies_the_boundary_rule_once`,
 `test_hessian_matrix_is_exact_on_a_quadratic`,
 `test_hessian_matrix_has_no_response_to_a_constant`,
@@ -1066,7 +1443,9 @@ These five landed as
 `test_hessian_matrix_transposes_with_the_image` in
 `tests/skimage2/feature/test_corner.py`, calling public `hessian_matrix`. The
 `skimage` suite carries the first four against
-`use_gaussian_derivatives=True`.
+`use_gaussian_derivatives=True`. The photograph test of §5.2 and the frequency test of §5.3 are not in either
+suite. The frequency test needs only an impulse. The photograph test needs a fit of
+the sums at test time, which takes about a second for each image.
 
 +++
 
@@ -1078,13 +1457,16 @@ These five landed as
 | exact on a quadratic | the curvature reported is the curvature that is there | `1e-14`, scaled |
 | no response to a constant | a flat image has no curvature | `1e-12` |
 | matches a Gaussian blob | agrees with a closed form the correction did not target | `1e-5`, σ ≥ 1 (σ < 1 diagnostic only) |
+| matches Gaussian sums fitted to photographs | agrees with a harder closed form, with content at all scales and orientations | `1e-3` at σ = 1, `1e-10` at σ ≥ 2 |
+| frequency response | the response to each frequency matches the exact smoothed Hessian | `1e-3` below π/2 at σ = 1, `1e-6` at σ = 2, `1e-10` at σ = 4 |
 | transpose | relabelling the axes relabels the tensor | `1e-12` of the peak (~$10^{-15}$ measured) |
 
 and the rules the pictures must obey: crop `8σ + 1` from the polynomial tests
 (§7.1), spell each boundary rule the way numpy spells it (§7.2), pad past the
 kernel reach for the reflecting modes (§7.3), and never parametrise the border
-test over `wrap` alone (§7.4). Keep the closed-form check on a **single
-interior blob**; multi-Gaussian scenes are for `hessian_review.md`.
+test over `wrap` alone (§7.4). Keep the single interior blob as the simplest
+closed-form check, and add the photographs of §5.2, which the blob flatters,
+and the frequency response of §5.3, which shows the error at each scale.
 
 ```{code-cell} ipython3
 import time
@@ -1113,12 +1495,14 @@ and the gap closes, the corrected kernels being the wider ones. Timings move by
 tens of per cent between runs on this machine, so read the ratio's order and not
 its last digit.
 
-**Limits.** One photograph (256², `camera` decimated), one synthetic quadratic
-and one Gaussian blob, at σ from 0.1 to 4, in two and three dimensions. §4.1
+**Limits.** One photograph (256², `camera` decimated), one synthetic quadratic,
+one Gaussian blob, three sums of Gaussians fitted to photographs and
+the impulse response of §5.3, at σ from
+0.1 to 4, in two and three dimensions. The sums are in two dimensions only. §4.1
 to §4.3 measure the consuming filters on flat and near-flat images only; what
 the floor does to them on real images is `on_frangi.md` and `on_meijering.md`'s
 business, not this notebook's, and the one photograph in §4.3 is a check that
-the floor does not fire, not a measurement of its effect. The five tests run
+the floor does not fire, not a measurement of its effect. The tests run
 against the transcriptions, not against the installed `hessian_matrix`; §1.1
 identifies the installed scheme but does not run the suite against it.
 `float32` input is not tested here, nor is the behaviour at σ below 0.3, where

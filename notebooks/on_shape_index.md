@@ -2,7 +2,13 @@
 title: 'Shape Index Under Gaussian Derivatives'
 date: 2026-11-14
 options:
-  updated: 2026-11-14
+  updated: 2026-11-17
+jupytext:
+  text_representation:
+    extension: .md
+    format_name: myst
+    format_version: 0.13
+    jupytext_version: 1.19.5
 kernelspec:
   name: python3
   display_name: Python 3 (ipykernel)
@@ -11,31 +17,41 @@ kernelspec:
 
 :::{changelog}
 2026-11-21 | cursor:composer | Replace assisted-by with changelog
+2026-11-17 | claude-code:claude-opus-5-5 | Restrict the blob comparison to the blob; add umbilic fix, far-field proof and published-formula checks; check literature against full texts
+2026-11-17 | claude-code:claude-fable-5-1 | Add literature search section
 2026-11-16 | claude-code:claude-opus-5 | Create workbook
+2026-11-14 | claude-code:claude-opus-5 | Create workbook
 :::
 
-`shape_index` built its Hessian with finite differences up to scikit-image 0.26.
-From 0.27 it uses the moment-corrected Gaussian derivative kernels of
-`hessian_matrix`. `on_hessian.md` and `hessian_review.md` measure why the
-Hessian changed. This notebook asks what the change does to the shape index,
-and whether the old route has any claim left.
+`skimage.feature.shape_index` smooths the image and then takes finite
+differences to make its Hessian. The `change-hessian-default` branch gives
+`hessian_matrix` moment-corrected Gaussian derivative kernels, but keeps
+`shape_index` on finite differences, because the shape index moves. This
+notebook asks which of the two shape indices is closer to the truth, and what a
+change would cost.
 
-The answer is that the shape index is not the Hessian, and the ordering can
-reverse: below a crossover near `sigma` 0.7 the finite-difference shape index is
-closer to a closed form than the Gaussian-derivative one, while its Hessian is
-further away.
+Inside a Gaussian blob, the Gaussian-derivative shape index is closer to the
+closed form at every `sigma` tested. Finite differences are closer only where
+the blob is below a thousandth of its peak. Both routes share a defect in the
+formula: where the two eigenvalues are exactly equal, the shape index goes to
+the wrong end of the scale.
 
 Subscripts $i$ and $j$ name the image axes in skimage's `rc` order: axis $i$ is
 the first array axis, down the rows, and axis $j$ the second, across the
 columns.
 
+## Setup
+
 ```{code-cell} ipython3
 from itertools import combinations_with_replacement
+from math import atan, pi
 import time
 
 import numpy as np
 import pandas as pd
 import scipy.ndimage as ndi
+from scipy.stats import spearmanr
+import sympy as sp
 import matplotlib.pyplot as plt
 from matplotlib.colors import LinearSegmentedColormap, TwoSlopeNorm
 
@@ -46,6 +62,12 @@ from nbhelper import show_table
 # The subject under test.
 import skimage as ski
 from skimage.feature import shape_index, hessian_matrix_eigvals
+```
+
+```{code-cell} ipython3
+# Comparators.
+import cv2
+import PIL.ImageFilter
 ```
 
 ```{code-cell} ipython3
@@ -63,8 +85,11 @@ plt.rcParams.update(
     {"figure.dpi": 110, "font.size": 9, "axes.titlesize": 9,
      "axes.titlecolor": MUTED, "figure.facecolor": "white"}
 )
+```
 
+## Helpers
 
+```{code-cell} ipython3
 def bare(ax, title=None):
     """Strip an image axes down to the pixels."""
     ax.set_xticks([]); ax.set_yticks([])
@@ -85,6 +110,55 @@ def recede(ax, title=None):
     if title:
         ax.set_title(title)
     return ax
+
+
+def interior(sigma, ndim=2, truncate=8):
+    """The pixels no kernel tap reached over the border."""
+    reach = int(truncate * sigma + 0.5) + 1
+    return (slice(reach, -reach),) * ndim
+```
+
+A Gaussian blob of width $w$, smoothed by a Gaussian of scale $\sigma$, is a
+Gaussian of variance $w^2 + \sigma^2$. Its Hessian, and so its shape index, has
+a closed form. That gives a standard that neither route was built against.
+
+```{code-cell} ipython3
+def blob_truth(size, width, sigma):
+    """A Gaussian blob, and the exact Hessian of its smoothing."""
+    r, c = [x - size // 2 for x in np.indices((size, size), dtype=float)]
+    image = np.exp(-(r**2 + c**2) / (2 * width**2))
+    spread = width**2 + sigma**2
+    amp = (width**2 / spread) * np.exp(-(r**2 + c**2) / (2 * spread))
+    H = [amp * (r**2 - spread) / spread**2,
+         amp * (r * c) / spread**2,
+         amp * (c**2 - spread) / spread**2]
+    return image, H
+
+
+BLOB_SIZE, BLOB_WIDTH = 201, 6.0
+```
+
+The tail of a Gaussian falls far below anything an image can store. An 8-bit
+image has one grey level at $1/255 \approx 4 \times 10^{-3}$ of its range. So
+the notebook splits the blob in two at a floor of $10^{-3}$ of the smoothed
+peak: the **blob** above it, and the **far field** below it.
+
+```{code-cell} ipython3
+FLOOR = 1e-3
+
+
+def zones(size, width, sigma, floor=FLOOR):
+    """Blob and far-field masks over the interior, split at `floor` of the peak."""
+    r2 = sum((x - size // 2) ** 2 for x in np.indices((size, size), dtype=float))
+    level = np.exp(-r2 / (2 * (width**2 + sigma**2)))   # smoothed blob / peak
+    inside = np.zeros((size, size), bool)
+    inside[interior(sigma)] = True
+    return inside & (level >= floor), inside & (level < floor)
+
+
+def radius(size):
+    """Distance of each pixel from the blob centre."""
+    return np.hypot(*[x - size // 2 for x in np.indices((size, size), dtype=float)])
 ```
 
 ## 1. The two routes
@@ -94,7 +168,7 @@ does the differentiating.
 
 ```{code-cell} ipython3
 def fd_hessian(image, sigma, mode="constant", cval=0):
-    """Smooth at sigma, then two central differences: the route up to 0.26."""
+    """Smooth at sigma, then two central differences: the shipped route."""
     smoothed = ski.filters.gaussian(image, sigma=sigma, mode=mode, cval=cval)
     gradients = np.gradient(smoothed)
     return [np.gradient(gradients[a], axis=b)
@@ -105,6 +179,10 @@ The Gaussian-derivative route convolves once per element with a kernel whose
 discrete moments have been restored. Sampling the derivative and using the taps
 as they fall leaves a kernel that responds to a constant image and under-reports
 curvature; imposing `sum(k) == 0` and `sum(k * x**2) / 2 == 1` repairs both.
+The `taps` function is a transcription of `_gaussian_derivative_kernel` on the
+`change-hessian-default` branch, at commit `d43497d71`. The two agree to the
+last bit for `sigma` from 0.1 to 2 and all three orders. That check ran outside
+this notebook, because the installed scikit-image does not have the branch.
 
 ```{code-cell} ipython3
 def taps(sigma, order, truncate=8):
@@ -130,7 +208,7 @@ def taps(sigma, order, truncate=8):
 
 
 def gd_hessian(image, sigma, mode="constant", cval=0, truncate=8):
-    """One separable pass per element, with the corrected kernels: 0.27 on."""
+    """One separable pass per element, with the corrected kernels."""
     image = np.asarray(image, dtype=float)
     ndim = image.ndim
     kernels = {(axis, o): taps(sigma, o, truncate)
@@ -149,14 +227,19 @@ def gd_hessian(image, sigma, mode="constant", cval=0, truncate=8):
 
 
 ROUTES = (("finite differences", fd_hessian), ("Gaussian derivatives", gd_hessian))
+SHORT = {"finite differences": "FD", "Gaussian derivatives": "GD"}
 ```
 
-The shape index itself is the same arithmetic either way: Koenderink and van
-Doorn's measure of local curvature, built from the two Hessian eigenvalues.
+The shape index is the same arithmetic on either Hessian. With the eigenvalues
+ordered $\lambda_1 \geq \lambda_2$, the library computes
+
+$$
+s = \frac{2}{\pi}\arctan\frac{\lambda_2 + \lambda_1}{\lambda_2 - \lambda_1}.
+$$
 
 ```{code-cell} ipython3
-def s_from(H):
-    """The shape index, from upper-diagonal Hessian elements."""
+def s_library(H):
+    """The shape index exactly as `skimage.feature.shape_index` computes it."""
     l1, l2 = hessian_matrix_eigvals(H)
     with np.errstate(divide="ignore", invalid="ignore"):
         return (2.0 / np.pi) * np.arctan((l2 + l1) / (l2 - l1))
@@ -165,8 +248,7 @@ def s_from(H):
 PHOTO = ski.util.img_as_float(ski.data.camera())[::2, ::2]
 ```
 
-The finite-difference transcription has to be the library's, or nothing below
-means anything.
+The finite-difference transcription must be the library's:
 
 ```{code-cell} ipython3
 show_table(pd.DataFrame(
@@ -174,13 +256,13 @@ show_table(pd.DataFrame(
       "transcription vs skimage.feature.shape_index":
           "bit-identical" if np.array_equal(
               np.nan_to_num(shape_index(PHOTO, sigma=sigma), nan=-9),
-              np.nan_to_num(s_from(fd_hessian(PHOTO, sigma)), nan=-9))
+              np.nan_to_num(s_library(fd_hessian(PHOTO, sigma)), nan=-9))
           else "DIFFERS"}
      for sigma in (0.5, 1.0, 2.0, 4.0)]), index="sigma")
 ```
 
-The Gaussian-derivative kernels are pinned by their two moment conditions, so
-check those instead.
+The two moment conditions pin the Gaussian-derivative second-derivative
+kernel:
 
 ```{code-cell} ipython3
 def moments(sigma):
@@ -196,46 +278,37 @@ def moments(sigma):
 show_table(pd.DataFrame([moments(s) for s in (0.3, 0.5, 1.0, 2.0)]), index="sigma")
 ```
 
-+++
-
 ## 2. The shape index only sees a ratio
 
-The Hessian comparisons in `hessian_review.md` are about magnitudes. The shape
-index is not: it is a function of the quotient of the two eigenvalues, so
+The shape index is a function of the quotient of the two eigenvalues. So
 multiplying the whole Hessian by any positive constant leaves it alone.
 
 ```{code-cell} ipython3
 rng = np.random.default_rng(0)
 random_H = [rng.normal(size=(64, 64)) for _ in range(3)]
-baseline = s_from(random_H)
+baseline = s_library(random_H)
 
 show_table(pd.DataFrame(
     [{"H scaled by": f"{c:g}",
       "max |change in s|":
-          f"{np.nanmax(np.abs(s_from([c * h for h in random_H]) - baseline)):.1e}"}
+          f"{np.nanmax(np.abs(s_library([c * h for h in random_H]) - baseline)):.1e}"}
      for c in (0.5, 2.0, 1e3, 1e-3)]), index="H scaled by")
 ```
 
-That is the design, not an accident of the formula. Koenderink and van Doorn
-build the shape index from a polar coordinate system in the
-$(\kappa_1, \kappa_2)$ plane, in which "the direction encodes the shape, whereas
-the distance from the origin encodes the size" [@koenderink1992surface_shape]. Their
-definition, with $\kappa_1 \geq \kappa_2$, is the one the library implements:
-
-$$
-s = \frac{2}{\pi}\arctan\frac{\kappa_2 + \kappa_1}{\kappa_2 - \kappa_1}
-$$
-
-and they note that $s$ is *directly proportional* to the angle with the
-$\kappa_1 + \kappa_2 = 0$ axis. Proportional, not merely monotonic, so an error
-in that angle is an error in $s$ scaled by a constant.
+That is the design. Koenderink and van Doorn build the shape index from a polar
+coordinate system in the $(\kappa_1, \kappa_2)$ plane, in which "the direction
+encodes the shape, whereas the distance from the origin encodes the size"
+[@koenderink1992surface_shape]. Their definition, with $\kappa_1 \geq
+\kappa_2$, is the formula above. They also state that $s$ is "directly
+proportional to the angle with the $\kappa_1 + \kappa_2 = 0$ axis". So an
+error in that angle is an error in $s$, scaled by a constant:
 
 ```{code-cell} ipython3
 rough = [a + 0.01 * rng.normal(size=a.shape) for a in random_H]
 pair_a, pair_b = hessian_matrix_eigvals(random_H), hessian_matrix_eigvals(rough)
 turn = np.arctan2(pair_b[1], pair_b[0]) - np.arctan2(pair_a[1], pair_a[0])
 turn = np.abs(np.arctan2(np.sin(turn), np.cos(turn)))
-moved = np.abs(s_from(rough) - s_from(random_H))
+moved = np.abs(s_library(rough) - s_library(random_H))
 usable = np.isfinite(moved) & np.isfinite(turn) & (moved < 1.9)
 
 show_table(pd.DataFrame([{
@@ -245,18 +318,127 @@ show_table(pd.DataFrame([{
     index="pixels compared")
 ```
 
-So the angle is not a proxy for the shape index. It *is* the shape index, to a
-factor of $2/\pi$. §6 uses that to take the error apart.
+The angle of the eigenvalue pair is the shape index, to a factor of $2/\pi$.
+§6 uses the angle to find which Hessian element carries the error.
 
 The companion measure in the same paper is the curvedness,
-$c = \sqrt{(\kappa_1^2 + \kappa_2^2)/2}$, which carries the distance from the
-origin. Between them $s$ and $c$ hold everything the Hessian has. The shape
-index discards $c$ entirely, and $c$ is what the moment correction of
-`hessian_matrix` repairs.
+$c = \sqrt{(\kappa_1^2 + \kappa_2^2)/2}$, which is the distance from the
+origin. The paper says that the shape index alone fixes the local shape "up to
+a scaling factor, or similarity". The moment correction sets the gain of each
+Hessian element on a quadratic to 1. A gain error common to all three elements
+changes $c$ and leaves $s$ alone.
 
 +++
 
-## 3. How much the pictures move
+## 3. The umbilic
+
+Koenderink and van Doorn separate two degenerate cases
+[@koenderink1992surface_shape]. At a **planar** point, $\kappa_1 = \kappa_2 =
+0$, the shape "is really indeterminate", and NaN is the right answer. At an
+**umbilic**, $\kappa_1 = \kappa_2 \neq 0$, the surface looks locally like the
+outside ($s = +1$) or the inside ($s = -1$) of a sphere, and these are "true
+endpoints of the shape scale". Their own example is a Gaussian hill: its top is
+an umbilic, and it is convex, so $s = +1$.
+
+The formula cannot reach that value reliably. `hessian_matrix_eigvals` returns
+$\lambda_1 \geq \lambda_2$, so $\lambda_2 - \lambda_1 \leq 0$. Where the
+difference is negative, the formula is correct. Where the two eigenvalues are
+exactly equal, IEEE 754 subtraction gives $+0$, never $-0$. The quotient then
+takes the sign of $\lambda_1 + \lambda_2$, which is the wrong sign. A cap, with
+$\lambda_1 = \lambda_2 < 0$, gives $-\infty$ and $s = -1$, a cup. A cup gives
+$+1$, a cap.
+
+The example in the library docstring is such a case. The centre of a single
+bright pixel is a cap:
+
+```{code-cell} ipython3
+square = np.zeros((5, 5))
+square[2, 2] = 4
+with np.errstate(divide="ignore", invalid="ignore"):
+    print(shape_index(square, sigma=0.1))
+```
+
+The centre value is $-1$, a spherical cup. The centre of the Gaussian blob is
+also a cap. Whether the formula gets it right depends on whether rounding
+leaves a residue:
+
+```{code-cell} ipython3
+def centre_rows(sigma, s_func):
+    """The shape index at the centre of the bright blob, for each Hessian."""
+    image, H_true = blob_truth(BLOB_SIZE, BLOB_WIDTH, sigma)
+    middle = BLOB_SIZE // 2
+    rows = []
+    for name, H in (("exact", H_true),
+                    *((n, route(image, sigma)) for n, route in ROUTES)):
+        l1, l2 = hessian_matrix_eigvals(H)
+        rows.append({"sigma": sigma, "Hessian": name,
+                     "l2 - l1": f"{l2[middle, middle] - l1[middle, middle]:+.1e}",
+                     "s": f"{s_func(H)[middle, middle]:+.4f}"})
+    return rows
+
+
+show_table(pd.DataFrame([r for s in (0.5, 1.0, 2.0, 4.0)
+                         for r in centre_rows(s, s_library)]), index="sigma")
+```
+
+The exact Hessian ties at every `sigma`, and calls the top of the hill a cup.
+The finite-difference Hessian leaves a residue of $-5.6 \times 10^{-17}$ and
+gets the right answer. The Gaussian-derivative Hessian ties at `sigma` 2 and 4,
+and gets the wrong one.
+
+The two-argument arctangent resolves the tie. For $\lambda_1 > \lambda_2$,
+
+$$
+\arctan\frac{\lambda_2 + \lambda_1}{\lambda_2 - \lambda_1}
+= -\operatorname{atan2}(\lambda_1 + \lambda_2,\ \lambda_1 - \lambda_2),
+$$
+
+and at $\lambda_1 - \lambda_2 = +0$ the right side is $\mp\pi/2$, with the
+correct sign. Only the planar point needs a separate NaN.
+
+```{code-cell} ipython3
+def s_from(H):
+    """The shape index, with the umbilic at -1 or +1 and the planar point NaN."""
+    l1, l2 = hessian_matrix_eigvals(H)
+    s = -(2.0 / np.pi) * np.arctan2(l1 + l2, l1 - l2)
+    return np.where((l1 == 0) & (l2 == 0), np.nan, s)
+
+
+show_table(pd.DataFrame([r for s in (0.5, 1.0, 2.0, 4.0)
+                         for r in centre_rows(s, s_from)]), index="sigma")
+```
+
+Every centre value is now $+1$. Away from ties the two formulas differ only by
+rounding:
+
+```{code-cell} ipython3
+def fix_cost(route, sigma):
+    """How far the corrected formula moves the shape index on the photograph."""
+    H = route(PHOTO, sigma)
+    a, b = s_library(H), s_from(H)
+    ok = np.isfinite(a) & np.isfinite(b)
+    l1, l2 = hessian_matrix_eigvals(H)
+    return {"sigma": sigma, "route": SHORT[[n for n, r in ROUTES if r is route][0]],
+            "exact ties": int(np.sum((l1 == l2) & (l1 != 0))),
+            "max |change in s|": f"{np.abs(a - b)[ok].max():.1e}",
+            "NaN, library": int(np.isnan(a).sum()), "NaN, corrected": int(np.isnan(b).sum())}
+
+
+show_table(pd.DataFrame([fix_cost(route, s) for s in (0.5, 1.0, 2.0, 4.0)
+                         for _, route in ROUTES]), index="sigma")
+square_fixed = s_from(fd_hessian(square, 0.1))
+print(f"docstring example, centre: library {shape_index(square, 0.1)[2, 2]:+.0f}, "
+      f"corrected {square_fixed[2, 2]:+.0f}")
+```
+
+The photograph has no exact ties, so the correction changes nothing there.
+Ties need exact symmetry, such as a synthetic image or a single bright pixel.
+All comparisons below use `s_from`, so that this defect does not mix with the
+Hessian error.
+
++++
+
+## 4. How much the pictures move
 
 The docstring sorts the shape index into nine named classes, from spherical cup
 at $-1$ to spherical cap at $+1$. The fraction of pixels that change class is
@@ -264,12 +446,7 @@ the change a caller sees.
 
 ```{code-cell} ipython3
 BINS = np.array([-7/8, -5/8, -3/8, -1/8, 1/8, 3/8, 5/8, 7/8])
-
-
-def interior(sigma, ndim=2, truncate=8):
-    """The pixels no kernel tap reached over the border."""
-    reach = int(truncate * sigma + 0.5) + 1
-    return (slice(reach, -reach),) * ndim
+CLASS_CHANGE = {}
 
 
 def change_row(image, sigma):
@@ -278,9 +455,9 @@ def change_row(image, sigma):
     a = s_from(fd_hessian(image, sigma))[inner]
     b = s_from(gd_hessian(image, sigma))[inner]
     ok = ~np.isnan(a) & ~np.isnan(b)
+    CLASS_CHANGE[sigma] = np.mean(np.digitize(a[ok], BINS) != np.digitize(b[ok], BINS))
     return {"sigma": sigma,
-            "pixels changing class":
-                f"{100 * np.mean(np.digitize(a[ok], BINS) != np.digitize(b[ok], BINS)):.1f}%",
+            "pixels changing class": f"{100 * CLASS_CHANGE[sigma]:.1f}%",
             "median |change in s|": f"{np.median(np.abs(a[ok] - b[ok])):.3f}",
             "NaN, FD": int(np.isnan(a).sum()), "NaN, GD": int(np.isnan(b).sum())}
 
@@ -289,9 +466,8 @@ show_table(pd.DataFrame([change_row(PHOTO, s) for s in (0.5, 1.0, 2.0, 4.0)]),
            index="sigma")
 ```
 
-At `sigma` of 0.5 most of the picture is reclassified; by `sigma` of 4 almost
-none of it is. Neither route produces NaN on this photograph, so the undefined
-flat regions the docstring warns about do not arise here.
+At `sigma` 0.5, 71% of the interior pixels of the photograph change class. At
+`sigma` 4, 5% do. Neither route produces NaN on this photograph.
 
 ```{code-cell} ipython3
 fig, axes = plt.subplots(1, 3, figsize=(8.4, 3.0))
@@ -312,8 +488,8 @@ fig.suptitle(f"shape index on camera at sigma = {VIEW_SIGMA}, cup (blue) to cap 
 fig.tight_layout()
 ```
 
-The difference is structured rather than scattered. Splitting the frame by how
-far the eigenvalue pair is from isotropic shows where it concentrates.
+The difference follows the structure of the picture. Split the pixels by how
+far the eigenvalue pair is from isotropic:
 
 ```{code-cell} ipython3
 pair = hessian_matrix_eigvals(gd_hessian(PHOTO, VIEW_SIGMA))
@@ -329,84 +505,153 @@ show_table(pd.DataFrame(
       "median |change in s|":
           f"{np.median(gap[usable & (anisotropy >= edges[k]) & (anisotropy <= edges[k+1])]):.4f}"}
      for k in range(5)]), index="|l1 - l2| / max|l|")
+print(f"Spearman rank correlation over pixels: "
+      f"{spearmanr(anisotropy[usable], gap[usable]).statistic:+.2f}")
 ```
 
-The disagreement is smallest in the middle of that range and largest at the top,
-where the two eigenvalues approach equal and opposite, which is where the saddles
-are. The rank correlation over the individual pixels is only +0.21, so this is a
-tendency rather than a rule, and the figure is the better description of the
-pattern.
+The disagreement is smallest in the middle quintiles and largest in the top
+one. At the top of the range the two eigenvalues are close to equal and
+opposite, which is a saddle. The rank correlation over pixels is $+0.21$, so
+this is a tendency, not a rule.
 
 +++
 
-## 4. Which one is right
+## 5. Which one is right
 
-A Gaussian blob smoothed by a Gaussian is a Gaussian, so its Hessian and
-therefore its shape index are known in closed form. That makes a standard
-neither route was built against.
-
-```{code-cell} ipython3
-def blob_truth(size, width, sigma):
-    """A Gaussian blob, and the exact shape index of its smoothing."""
-    r, c = [x - size // 2 for x in np.indices((size, size), dtype=float)]
-    image = np.exp(-(r**2 + c**2) / (2 * width**2))
-    spread = width**2 + sigma**2
-    amp = (width**2 / spread) * np.exp(-(r**2 + c**2) / (2 * spread))
-    H = [amp * (r**2 - spread) / spread**2,
-         amp * (r * c) / spread**2,
-         amp * (c**2 - spread) / spread**2]
-    return image, H
-
-
-SIGMAS = (0.3, 0.5, 0.8, 1.0, 1.5, 2.0, 4.0)
-BLOB_SIZE, BLOB_WIDTH = 201, 6.0
-
-
-def blob_error(route, sigma):
-    """Mean |s - s_exact| over the interior of the blob."""
-    image, H_true = blob_truth(BLOB_SIZE, BLOB_WIDTH, sigma)
-    inner = interior(sigma)
-    truth = s_from(H_true)
-    return np.nanmean(np.abs(s_from(route(image, sigma))[inner] - truth[inner]))
-
-
-errors = {name: [blob_error(route, s) for s in SIGMAS] for name, route in ROUTES}
-show_table(pd.DataFrame(
-    [{"sigma": s,
-      **{name: f"{errors[name][k]:.2e}" for name, _ in ROUTES},
-      "closer": min(ROUTES, key=lambda nr: errors[nr[0]][k])[0],
-      "by": f"{max(errors[n][k] for n, _ in ROUTES) / min(errors[n][k] for n, _ in ROUTES):.0f}x"}
-     for k, s in enumerate(SIGMAS)]), index="sigma")
-```
-
-The ordering reverses between `sigma` 0.5 and 0.8 on this grid; §10 sweeps
-finely and puts the crossover at 0.70 for this blob. Below it the
-finite-difference shape index is the closer of the two, by a factor of 14 at
-`sigma` 0.5 and 28 at `sigma` 0.3. Above it the Gaussian-derivative one wins,
-and by four orders of magnitude by `sigma` 2.
+Per-pixel error against the closed form, as a function of distance from the
+blob centre:
 
 ```{code-cell} ipython3
-fig, ax = plt.subplots(figsize=(5.6, 3.2))
-for (name, _), colour in zip(ROUTES, (C_TWO, C_ONE)):
-    ax.semilogy(SIGMAS, errors[name], "-o", color=colour, linewidth=2,
-                markersize=6, label=name)
-ax.axvline(0.70, color=RULE, linewidth=1, zorder=0)   # located in section 10
-ax.annotate("crossover, 0.70", (0.68, 3e-7), color=MUTED, fontsize=8,
-            rotation=90, va="bottom", ha="right")
-ax.set_xticks(SIGMAS)
-ax.set_xticklabels([str(s) for s in SIGMAS])
-recede(ax, "mean |s - s_exact| on a smoothed Gaussian blob")
-ax.set_xlabel("sigma", color=MUTED)
-ax.legend(frameon=False, fontsize=8, labelcolor=MUTED)
+def s_errors(route, width, sigma, size=BLOB_SIZE):
+    """|s - s_exact| at every pixel of the smoothed blob."""
+    image, H_true = blob_truth(size, width, sigma)
+    return np.abs(s_from(route(image, sigma)) - s_from(H_true))
+
+
+def radial_median(values, mask, r):
+    """Median of `values` over `mask`, at each integer radius."""
+    ri = np.rint(r).astype(int)
+    radii = np.unique(ri[mask])
+    return radii, np.array([np.median(values[mask & (ri == k)]) for k in radii])
+
+
+fig, axes = plt.subplots(1, 2, figsize=(8.4, 3.2), sharey=True)
+r = radius(BLOB_SIZE)
+for ax, sigma in zip(axes, (0.5, 1.0)):
+    inside = zones(BLOB_SIZE, BLOB_WIDTH, sigma)
+    inside = inside[0] | inside[1]
+    for (name, route), colour in zip(ROUTES, (C_TWO, C_ONE)):
+        radii, med = radial_median(s_errors(route, BLOB_WIDTH, sigma), inside, r)
+        ax.semilogy(radii, np.maximum(med, 1e-16), color=colour, linewidth=2,
+                    label=name)
+    edge = np.sqrt(2 * (BLOB_WIDTH**2 + sigma**2) * np.log(1 / FLOOR))
+    ax.axvline(edge, color=RULE, linewidth=1, zorder=0)
+    ax.annotate(f"blob falls to {FLOOR:g} of peak", (edge + 1, 1e-14),
+                color=MUTED, fontsize=8)
+    recede(ax, f"sigma = {sigma}")
+    ax.set_xlabel("distance from blob centre (pixels)", color=MUTED)
+axes[0].set_ylabel("median |s - s_exact|", color=MUTED)
+axes[0].legend(frameon=False, fontsize=8, labelcolor=MUTED, loc="center right")
 fig.tight_layout()
 ```
 
-+++
+At `sigma` 0.5 the finite-difference error is about $4 \times 10^{-3}$ over
+most radii. The Gaussian-derivative error is smaller inside the blob, and climbs
+past the finite-difference error only beyond the floor line. At `sigma` 1 it is
+smaller everywhere. Split the interior at the floor and average each part:
 
-## 5. A better Hessian, a worse shape index
+```{code-cell} ipython3
+SIGMAS = (0.3, 0.5, 0.8, 1.0, 1.5, 2.0, 4.0)
+BLOB_ERR = {}
 
-The reversal is not the Gaussian-derivative Hessian being worse at small
-`sigma`. On the same images it is better at every scale measured.
+
+def zone_row(sigma, width=BLOB_WIDTH):
+    """Mean |s - s_exact| of each route, inside the blob and in the far field."""
+    blob, far = zones(BLOB_SIZE, width, sigma)
+    errs = {SHORT[name]: s_errors(route, width, sigma) for name, route in ROUTES}
+    row = {"sigma": sigma}
+    for zone, mask in (("blob", blob), ("far field", far)):
+        means = {k: np.mean(e[mask]) for k, e in errs.items()}
+        if zone == "blob":
+            BLOB_ERR[sigma] = means
+        for k, v in means.items():
+            row[f"{zone}, {k}"] = f"{v:.1e}"
+        row[f"{zone}, closer"] = min(means, key=means.get)
+    return row
+
+
+show_table(pd.DataFrame([zone_row(s) for s in SIGMAS]), index="sigma")
+```
+
+Inside the blob the Gaussian-derivative shape index is closer at every
+`sigma`: by a factor of about 2 at `sigma` 0.3, 5 at 0.5, and $10^{10}$ or more
+from 1.5. In the far field finite differences are closer at `sigma` 0.3 and
+0.5. An
+average over the whole interior is mostly far field, because the far field has
+most of the pixels.
+
+The split depends on the floor. Move it:
+
+```{code-cell} ipython3
+def floor_row(floor):
+    """Which route is closer, when the blob ends at `floor` of the peak."""
+    row = {"floor": f"{floor:g}"}
+    for sigma in (0.3, 0.5):
+        errs = {SHORT[n]: s_errors(r, BLOB_WIDTH, sigma) for n, r in ROUTES}
+        blob, _ = zones(BLOB_SIZE, BLOB_WIDTH, sigma, floor)
+        means = {k: np.mean(e[blob]) for k, e in errs.items()}
+        row[f"sigma {sigma}, pixels"] = int(blob.sum())
+        row[f"sigma {sigma}, FD / GD"] = f"{means['FD'] / means['GD']:.2f}"
+    return row
+
+
+show_table(pd.DataFrame([floor_row(f) for f in (1e-2, 1e-3, 1e-4, 1e-6, 0)]),
+           index="floor")
+```
+
+A ratio above 1 means Gaussian derivatives are closer. At `sigma` 0.3,
+finite differences win only when the blob extends down to $10^{-6}$ of the
+peak. At `sigma` 0.5 they win only with a floor of 0, which is the whole
+interior.
+
+The result holds over blob widths:
+
+```{code-cell} ipython3
+def width_row(width):
+    """Mean |s - s_exact| inside the blob, for one blob width."""
+    size = 201 if width <= 10 else 301
+    row = {"blob width": width}
+    for sigma in (0.3, 0.5):
+        blob, _ = zones(size, width, sigma)
+        for name, route in ROUTES:
+            row[f"sigma {sigma}, {SHORT[name]}"] = \
+                f"{np.mean(s_errors(route, width, sigma, size)[blob]):.1e}"
+    return row
+
+
+show_table(pd.DataFrame([width_row(w) for w in (2.0, 3.0, 6.0, 10.0, 16.0)]),
+           index="blob width")
+```
+
+The finite-difference error barely moves with `sigma`. The stencil error of a
+central difference is second order in the pixel spacing, relative to the width
+of the smoothed blob, $\sqrt{w^2 + \sigma^2}$. So the error times
+$w^2 + \sigma^2$ should be near constant:
+
+```{code-cell} ipython3
+show_table(pd.DataFrame(
+    [{"blob width": w, "sigma": s,
+      "FD error": f"{np.mean(s_errors(fd_hessian, w, s, 301)[zones(301, w, s)[0]]):.2e}",
+      "FD error * (w**2 + sigma**2)":
+          f"{np.mean(s_errors(fd_hessian, w, s, 301)[zones(301, w, s)[0]]) * (w**2 + s**2):.3f}"}
+     for w in (3.0, 6.0, 12.0) for s in (0.5, 2.0)]), index="blob width")
+```
+
+The scaled error stays in a narrow band while the raw error changes by a
+factor of more than ten. At a fixed blob width, `sigma` below 2 adds little to
+$w^2$, so the finite-difference error stays flat.
+
+The Hessian ranks the routes the same way as the shape index inside the blob:
 
 ```{code-cell} ipython3
 def hessian_error(route, sigma):
@@ -420,408 +665,144 @@ def hessian_error(route, sigma):
 
 show_table(pd.DataFrame(
     [{"sigma": s,
-      **{f"H, {name}": f"{hessian_error(route, s):.2e}" for name, route in ROUTES},
-      "H closer": min(ROUTES, key=lambda nr: hessian_error(nr[1], s))[0],
-      "s closer": min(ROUTES, key=lambda nr: errors[nr[0]][k])[0]}
-     for k, s in enumerate((0.3, 0.5, 0.8, 1.0, 2.0))]), index="sigma")
+      **{f"H, {SHORT[name]}": f"{hessian_error(route, s):.2e}" for name, route in ROUTES},
+      "H closer": SHORT[min(ROUTES, key=lambda nr: hessian_error(nr[1], s))[0]],
+      "s closer, blob": min(BLOB_ERR[s], key=BLOB_ERR[s].get)}
+     for s in (0.3, 0.5, 0.8, 1.0, 2.0)]), index="sigma")
 ```
 
-At `sigma` 0.3 and 0.5 the Gaussian-derivative Hessian is the closer one and its
-shape index is the further one. The accuracy of a Hessian is therefore not a
-proxy for the accuracy of the shape index built from it, and §2 is why: the
-shape index discards exactly the part of the Hessian that the moment correction
-repairs.
+## 6. Why finite differences win in the far field
 
-+++
+Far from its centre, the blob is close to an exponential. About a point
+$\mathbf{x}_0$, $f(\mathbf{x}_0 + \mathbf{h}) = f(\mathbf{x}_0)\exp(\mathbf{a}
+\cdot \mathbf{h} - |\mathbf{h}|^2 / 2v)$ with $\mathbf{a} = -\mathbf{x}_0 / v$
+and $v = w^2 + \sigma^2$. Far out, $|\mathbf{a}|^2 \gg 1/v$, so the Hessian
+$f\,(\mathbf{a}\mathbf{a}^T - I/v)$ is close to rank one. The shape index there
+depends on the small eigenvalue, $-f/v$, and so on small errors.
 
-## 6. What turns the eigenvalue pair
-
-§2 showed the angle of the eigenvalue pair *is* the shape index, to a factor of
-$2/\pi$. Measuring the angle is therefore not a different experiment from §4; it
-is the same error, in units that can be taken apart element by element.
+Take a pure exponential, $f = e^{ax + by}$. Its Hessian $f\,\mathbf{a}
+\mathbf{a}^T$ has rank one, so $s = -1/2$ exactly, whatever $a$ and $b$. Let
+$\delta$ be the central difference, $(f(x+1) - f(x-1))/2$. The finite-difference
+route uses $\delta$ twice for every element. At small `sigma`, the corrected
+kernels approach $(1, -2, 1)$ for the diagonal elements and $\delta$ along
+each axis for the mixed element:
 
 ```{code-cell} ipython3
-def angle_error(H, H_true, inner):
-    """Median angular error of the eigenvalue pair, in radians."""
-    lt = hessian_matrix_eigvals(H_true)
-    lc = hessian_matrix_eigvals(H)
-    at = np.arctan2(lt[1][inner], lt[0][inner])
-    ac = np.arctan2(lc[1][inner], lc[0][inner])
-    return np.median(np.abs(np.arctan2(np.sin(ac - at), np.cos(ac - at))))
-
-
-def angle_row(sigma):
-    """Angular error of each route at one scale."""
-    image, H_true = blob_truth(BLOB_SIZE, BLOB_WIDTH, sigma)
-    inner = interior(sigma)
-    return {"sigma": sigma,
-            **{name: f"{angle_error(route(image, sigma), H_true, inner):.2e}"
-               for name, route in ROUTES}}
-
-
-show_table(pd.DataFrame([angle_row(s) for s in (0.3, 0.5, 1.0, 2.0)]),
-           index="sigma")
+show_table(pd.DataFrame(
+    [{"order": o, "taps at sigma 0.3": np.array2string(taps(0.3, o), precision=4)}
+     for o in (0, 1, 2)]), index="order")
 ```
 
-The finite-difference angular error is flat at about $5 \times 10^{-3}$ radians
-at every scale, because its stencil error is set by the pixel grid and not by
-`sigma`. The Gaussian-derivative one starts an order of magnitude worse and
-falls away to nothing.
-
-Which element carries it is decidable: substitute the exact value for one
-element and measure the angle again.
+The determinant of each discrete Hessian, divided by $f^2$:
 
 ```{code-cell} ipython3
+x, y, a, b = sp.symbols("x y a b", real=True)
+f = sp.exp(a * x + b * y)
+
+
+def d1(e, v):
+    """Central difference along v."""
+    return (e.subs(v, v + 1) - e.subs(v, v - 1)) / 2
+
+
+def d2(e, v):
+    """The (1, -2, 1) second difference along v."""
+    return e.subs(v, v + 1) - 2 * e + e.subs(v, v - 1)
+
+
+H_fd = sp.Matrix([[d1(d1(f, x), x), d1(d1(f, x), y)],
+                  [d1(d1(f, x), y), d1(d1(f, y), y)]])
+H_gd0 = sp.Matrix([[d2(f, x), d1(d1(f, x), y)],
+                   [d1(d1(f, x), y), d2(f, y)]])
+det_fd = sp.simplify((H_fd.det() / f**2).rewrite(sp.exp))
+target = (16 * sp.sinh(a / 2)**2 * sp.sinh(b / 2)**2
+          * (1 - sp.cosh(a / 2)**2 * sp.cosh(b / 2)**2))
+residue = sp.simplify((H_gd0.det() / f**2 - target).rewrite(sp.exp))
+print("finite differences:   det / f**2 =", det_fd)
+print("small-sigma GD limit: det / f**2 =", target, "  (residue", residue, ")")
+```
+
+The finite-difference Hessian of any exponential is $f\,\mathbf{s}\mathbf{s}^T$
+with $\mathbf{s} = (\sinh a, \sinh b)$, which has rank one. A sampled Gaussian
+multiplies an exponential by a constant, so the finite-difference route gives
+$s = -1/2$ exactly, at every `sigma`. The small-`sigma` limit of the Gaussian
+derivative kernels has a negative determinant for any non-zero $a$ and $b$.
+That is one positive and one negative eigenvalue, so $s$ moves from $-1/2$
+towards the saddle.
+
+On an image:
+
+```{code-cell} ipython3
+def ramp_error(route, sigma, a, b, size=64):
+    """Median |s + 1/2| on the exponential ramp exp(a r + b c)."""
+    r, c = np.indices((size, size), dtype=float)
+    s = s_from(route(np.exp(a * r + b * c), sigma))[interior(sigma)]
+    return np.median(np.abs(s + 0.5))
+
+
+show_table(pd.DataFrame(
+    [{"ramp (a, b)": f"({a_}, {b_})", "sigma": s,
+      **{SHORT[n]: f"{ramp_error(r_, s, a_, b_):.1e}" for n, r_ in ROUTES}}
+     for a_, b_ in ((0.2, 0.1), (0.6, 0.3)) for s in (0.3, 0.5, 1.0, 2.0)]),
+    index="ramp (a, b)")
+```
+
+Finite differences are exact to rounding on both ramps. The Gaussian-derivative
+error grows with the steepness of the ramp and falls with `sigma`. In the
+blob's far field at radius 30, $|\mathbf{a}| \approx 0.8$ per pixel.
+
+Which element carries the error is decidable: replace one element with its
+exact value and measure the angle of §2 again.
+
+```{code-cell} ipython3
+def angle_error(H, H_true, mask):
+    """Median angular error of the eigenvalue pair over `mask`, in radians."""
+    lt, lc = hessian_matrix_eigvals(H_true), hessian_matrix_eigvals(H)
+    turn = np.arctan2(lc[1], lc[0]) - np.arctan2(lt[1], lt[0])
+    return np.median(np.abs(np.arctan2(np.sin(turn), np.cos(turn)))[mask])
+
+
 def swap_rows(sigma):
     """Angular error with each element in turn replaced by its exact value."""
     image, H_true = blob_truth(BLOB_SIZE, BLOB_WIDTH, sigma)
-    inner = interior(sigma)
+    blob, far = zones(BLOB_SIZE, BLOB_WIDTH, sigma)
     out = []
-    for name, route in ROUTES:
-        H = route(image, sigma)
-        out.append({
-            "sigma": sigma, "route": name,
-            "as computed": f"{angle_error(H, H_true, inner):.2e}",
-            "exact mixed element":
-                f"{angle_error([H[0], H_true[1], H[2]], H_true, inner):.2e}",
-            "exact diagonals":
-                f"{angle_error([H_true[0], H[1], H_true[2]], H_true, inner):.2e}"})
+    for zone, mask in (("blob", blob), ("far field", far)):
+        for name, route in ROUTES:
+            H = route(image, sigma)
+            out.append({
+                "sigma": sigma, "zone": zone, "route": SHORT[name],
+                "as computed": f"{angle_error(H, H_true, mask):.1e}",
+                "exact mixed": f"{angle_error([H[0], H_true[1], H[2]], H_true, mask):.1e}",
+                "exact diagonals":
+                    f"{angle_error([H_true[0], H[1], H_true[2]], H_true, mask):.1e}"})
     return out
 
 
-show_table(pd.DataFrame([r for s in (0.3, 0.5, 1.0) for r in swap_rows(s)]),
-           index="sigma")
+show_table(pd.DataFrame([r for s in (0.3, 0.5) for r in swap_rows(s)]), index="sigma")
 ```
 
-Two different stories in one table.
+Inside the blob, the finite-difference error is mostly in the diagonal
+elements. Exact diagonals cut it by a factor of about 4. The doubled central
+difference, $(\tfrac14, 0, -\tfrac12, 0, \tfrac14)$, is a wide stencil. At
+`sigma` 0.3 the Gaussian-derivative error is split between the diagonals and
+the mixed element, and neither substitution alone removes it.
 
-For the Gaussian-derivative route at `sigma` 0.3, handing it the exact mixed
-element drops the angular error by a factor of about 50, and handing it the
-exact diagonals does not help at all (0.119 against 0.108 as computed). Its
-small-`sigma` shape-index error *is* the mixed
-element. That follows from how the kernels are built: the diagonal elements get
-the second-derivative kernel, whose moment correction forces exactness on a
-quadratic, while the mixed element is two first-derivative kernels whose
-correction fixes only the first moment.
-
-For the finite-difference route, handing it the exact mixed element makes the
-angle **nine times worse**, and the exact diagonals twenty-seven times worse. Its
-small angular error is not accuracy in any element. It is three element errors
-that cancel, and repairing any one of them destroys the cancellation.
+In the far field the pattern is different. One exact element makes the
+finite-difference angle about 10 to 40 times worse, because it breaks the
+rank-one structure that the shared operator $\delta$ keeps. At `sigma` 0.3 the
+Gaussian-derivative far-field error is almost all in the mixed element: the
+exact mixed element cuts it by a factor of about 50.
 
 +++
 
-## 7. Reasons to prefer the finite-difference result
-
-Three were measurable. The first is §4's accuracy below the crossover. The second
-is noise.
-
-```{code-cell} ipython3
-def noise_row(sigma, amplitude, draws=12):
-    """Spread of s under repeated noise, where the blob has real curvature."""
-    image, _ = blob_truth(BLOB_SIZE, BLOB_WIDTH, 1.0)
-    _, H_true = blob_truth(BLOB_SIZE, BLOB_WIDTH, sigma)
-    strength = np.sqrt(H_true[0]**2 + 2 * H_true[1]**2 + H_true[2]**2)
-    inner = interior(sigma)
-    mask = (strength > 0.3 * strength.max())[inner]
-    rng = np.random.default_rng(0)
-    draws_by_route = {name: [] for name, _ in ROUTES}
-    for _ in range(draws):
-        noisy = image + amplitude * rng.normal(size=image.shape)
-        for name, route in ROUTES:
-            draws_by_route[name].append(s_from(route(noisy, sigma))[inner])
-    row = {"sigma": sigma, "noise": amplitude}
-    for name, _ in ROUTES:
-        stack = np.stack(draws_by_route[name])
-        row[name] = f"{np.nanmean(np.nanstd(stack, axis=0)[mask]):.4f}"
-    return row
-
-
-show_table(pd.DataFrame([noise_row(s, a) for s in (1.0, 2.0)
-                         for a in (0.005, 0.02)]), index="sigma")
-```
-
-The finite-difference shape index is the steadier of the two under noise, by
-about 1.8 times at `sigma` 1 and 1.2 times at `sigma` 2. Its stencil spans two
-pixels rather than one and rolls off towards Nyquist, so it passes less of the
-noise that a second derivative amplifies.
-
-The third is cost.
-
-```{code-cell} ipython3
-rows = []
-for sigma in (0.5, 1.0, 2.0, 4.0):
-    timing = {}
-    for name, route in ROUTES:
-        runs = []
-        for _ in range(3):                      # best of three, not the mean
-            started = time.perf_counter()
-            route(PHOTO, sigma)
-            runs.append(time.perf_counter() - started)
-        timing[name] = min(runs)
-    rows.append({"sigma": sigma,
-                 **{n: f"{t * 1e3:.1f} ms" for n, t in timing.items()},
-                 "ratio": f"{timing[ROUTES[1][0]] / timing[ROUTES[0][0]]:.1f}x"})
-show_table(pd.DataFrame(rows), index="sigma")
-```
-
-The corrected kernels are truncated at eight standard deviations, so they grow
-with `sigma` where the central differences do not.
-
-The fourth reason is not measurable here and is the strongest: a published
-result computed with the old route is reproduced only by the old route.
-`skimage2.migration.shape_index_finite_difference` is that route, kept for the
-purpose.
-
-+++
-
-## 8. What other libraries do
-
-The shape index is implemented elsewhere, but almost entirely on explicit
-surfaces -- triangle meshes or fields of normals -- rather than on a raster.
-FreeSurfer's `mris_curvature_stats`, `pycurv`, VCGLib and the `eos` library all
-carry it; MIRTK carries the curvedness without it. ITK, SimpleITK, VIGRA,
-DIPlib, OpenCV and Pillow carry neither.
-
-That matters for §4 and §7: a mesh implementation fits a quadratic to a vertex
-neighbourhood, so it never has to choose between finite differences and
-Gaussian derivatives. The choice this notebook is about belongs to the raster
-setting, and there is no other library in that setting to check against.
-
-The implementations that do exist disagree with each other on two things. The
-first is the sign.
-
-```{code-cell} ipython3
-from math import atan, pi
-
-DOME = (-1.0, -2.0)            # k1 >= k2, both negative: a dome
-
-
-def library_forms(k1, k2):
-    """The same dome, under each library's published expression."""
-    return [
-        {"library": "scikit-image, after Koenderink",
-         "expression": "(2/pi) atan((k2+k1)/(k2-k1))",
-         "s": f"{2 / pi * atan((k2 + k1) / (k2 - k1)):+.3f}"},
-        {"library": "pycurv",
-         "expression": "(2/pi) atan((k1+k2)/(k1-k2))",
-         "s": f"{2 / pi * atan((k1 + k2) / (k1 - k2)):+.3f}"},
-        {"library": "FreeSurfer",
-         "expression": "atan((k1+k2)/(k2-k1))",
-         "s": f"{atan((k1 + k2) / (k2 - k1)):+.3f}"},
-    ]
-
-
-show_table(pd.DataFrame(library_forms(*DOME)), index="library")
-```
-
-`pycurv` reverses the denominator, so its shape index is the negative of
-Koenderink's: the dome that scikit-image scores at $+0.795$ it scores at
-$-0.795$. FreeSurfer omits the $2/\pi$, so its range is $[-\pi/2, +\pi/2]$
-rather than $[-1, +1]$. scikit-image follows the paper exactly, in the formula,
-in the $\kappa_1 \geq \kappa_2$ ordering, and in the nine category bounds of
-the docstring table.
-
-The second disagreement is the degenerate case, and it is the subject of §9.
-FreeSurfer returns 0 when the two curvatures are equal:
-
-```c
-return (af_k1 == af_k2 ? 0 : atan((af_k1+af_k2)/(af_k2 - af_k1)));
-```
-
-`pycurv` returns 0 only when both are zero, and leaves the equal-and-non-zero
-case to the arithmetic:
-
-```python
-if kappa_1 == 0 and kappa_2 == 0:
-    return 0
-else:
-    return 2 / pi * atan((kappa_1 + kappa_2) / (kappa_1 - kappa_2))
-```
-
-Neither matches the paper. §9 is what the paper asks for.
-
-FreeSurfer puts the shape index behind an explicit `--shapeIndex` command-line
-flag, with the comment "The 'Shape Index' can be problematic due to the atan
-calculations", so the fragility §9 measures has been met before.
-
-+++
-
-## 9. What not to conclude
-
-### 9.1 The accuracy below the crossover is not a property to rely on
-
-§6 is the reason. The finite-difference route is close on the angle because its
-three element errors cancel, not because any element is right. Whether the cancellation
-holds for an image unlike this blob is not measured here, and it cannot be with
-the method used: §4 needs a closed form, which a photograph does not have. A property that
-survives only while three errors stay in step is a coincidence to be grateful
-for, not a design to depend on.
-
-## 10. Should the library switch route below the crossover
-
-§4 found the finite-difference shape index closer to the closed form at small
-`sigma`, so the question is whether `shape_index` should dispatch on `sigma`.
-Three measurements say no.
-
-The first is that the crossover is a property of the image, not a constant.
-
-```{code-cell} ipython3
-def crossover(width, size=201, grid=np.arange(0.3, 2.01, 0.05)):
-    """The smallest sigma at which Gaussian derivatives overtake."""
-    for sigma in grid:
-        image, H_true = blob_truth(size, width, sigma)
-        inner = interior(sigma)
-        truth = s_from(H_true)
-        errs = [np.nanmean(np.abs(s_from(route(image, sigma))[inner] - truth[inner]))
-                for _, route in ROUTES]
-        if errs[1] < errs[0]:
-            return sigma
-    return np.nan
-
-
-show_table(pd.DataFrame(
-    [{"blob width": w, "size": 201 if w <= 10 else 301,
-      "crossover sigma": f"{crossover(w, 201 if w <= 10 else 301):.2f}"}
-     for w in (2.0, 3.0, 6.0, 10.0, 16.0)]), index="blob width")
-```
-
-It moves between 0.55 and 0.70 over blob widths from 2 to 16 pixels, on the one
-family of shapes where a closed form exists at all. A photograph contains many
-widths at once, so no single `sigma` divides the two regimes for a whole image.
-
-The second is that a switch is a discontinuity in `sigma`, and the shape index
-is often swept over `sigma`.
-
-```{code-cell} ipython3
-def step(low, high):
-    """What a reader sees across a sigma step, switching or not."""
-    inner = interior(high)
-    before = s_from(fd_hessian(PHOTO, low))[inner]
-    after = s_from(gd_hessian(PHOTO, high))[inner]
-    unswitched = s_from(gd_hessian(PHOTO, low))[inner]
-    ok = np.isfinite(before) & np.isfinite(after) & np.isfinite(unswitched)
-    return {"sigma step": f"{low} to {high}",
-            "median |ds|, switching route": f"{np.median(np.abs(after - before)[ok]):.3f}",
-            "median |ds|, staying on one": f"{np.median(np.abs(after - unswitched)[ok]):.3f}"}
-
-
-show_table(pd.DataFrame([step(0.79, 0.81), step(0.75, 0.85)]), index="sigma step")
-```
-
-Across a `sigma` step of 0.02 a switch moves the shape index by 0.134, where
-staying on one route moves it by 0.011. The artefact is twelve times the signal,
-and more than half the width of a category bin from the docstring table.
-
-The third is §6. The advantage being bought is a cancellation of three element
-errors, and §6 locates the Gaussian-derivative shortfall in the mixed element.
-A better mixed-element kernel is worth having on its own account, but it does
-not remove the reason for a switch: imposing the first-derivative kernel's third
-moment, which is 270% out at `sigma` 0.3 and exact above 0.8, improves the mixed
-element by about 50 times and the typical shape-index pixel by 3 to 6 times, and
-still moves the crossover only from 0.70 to 0.65. The gap below the crossover is
-not the mixed element alone.
-
-Callers who want the old numbers at every `sigma`, continuously, already have
-them in `skimage2.migration.shape_index_finite_difference`.
-
-+++
-
-## 11. The umbilic, where the formula cannot say what the paper says
-
-Koenderink and van Doorn separate two degenerate cases, and only one of them is
-undefined [@koenderink1992surface_shape]. At a **planar** point,
-$\kappa_1 = \kappa_2 = 0$, the direction in the $(\kappa_1, \kappa_2)$ plane is
-the direction of the origin, so the shape index "is really indeterminate", as
-they put it, and NaN is the right answer. At an **umbilic**,
-$\kappa_1 = \kappa_2 \neq 0$, it is not indeterminate: it is $s = +1$ for the
-outside of a sphere and $s = -1$ for the inside, and those are "true endpoints
-of the scale".
-
-The formula cannot deliver that. It reads the sign of $\kappa_2 - \kappa_1$,
-which at an umbilic is zero, so the answer comes from a rounding residue.
-
-```{code-cell} ipython3
-image, H_true = blob_truth(BLOB_SIZE, BLOB_WIDTH, 0.5)
-middle = BLOB_SIZE // 2
-rows = []
-for name, H in (("exact", H_true), ("finite differences", fd_hessian(image, 0.5)),
-                ("Gaussian derivatives", gd_hessian(image, 0.5))):
-    l1, l2 = hessian_matrix_eigvals(H)
-    a, b = l1[middle, middle], l2[middle, middle]
-    with np.errstate(divide="ignore", invalid="ignore"):
-        rows.append({"route": name, "lambda1": f"{a:.6e}", "lambda2": f"{b:.6e}",
-                     "lambda2 - lambda1": f"{b - a:.1e}",
-                     "s": f"{(2 / np.pi) * np.arctan((b + a) / (b - a)):+.4f}"})
-show_table(pd.DataFrame(rows), index="route")
-```
-
-At the centre of a radially symmetric blob the two curvatures are equal, so
-`lambda2 - lambda1` is either exactly zero or a residue of order $10^{-17}$, and
-its sign sends the shape index to $-1$ or $+1$ — spherical cup or spherical cap,
-the two ends of the scale. This is a determinate value that the implementation
-cannot reach, not a quantity the two routes disagree about on their merits.
-
-The two computed routes do at least agree with each other, and flip together
-with the sign of the curvature. The exact Hessian, whose residue is a positive
-zero rather than a negative one, lands on the other end in both cases.
-
-```{code-cell} ipython3
-def umbilic_row(label, image, name, H):
-    """The shape index at the centre, where the two curvatures are equal."""
-    l1, l2 = hessian_matrix_eigvals(H)
-    middle = BLOB_SIZE // 2
-    a, b = l1[middle, middle], l2[middle, middle]
-    with np.errstate(divide="ignore", invalid="ignore"):
-        return {"blob": label, "route": name, "k1 = k2": f"{a:+.3e}",
-                "k2 - k1": f"{b - a:+.1e}",
-                "s": f"{(2 / np.pi) * np.arctan((b + a) / (b - a)):+.1f}"}
-
-
-bright, H_bright = blob_truth(BLOB_SIZE, BLOB_WIDTH, 1.0)
-rows = []
-for label, image, H_exact in (("bright (local max)", bright, H_bright),
-                              ("dark (local min)", -bright,
-                               [-h for h in H_bright])):
-    rows.append(umbilic_row(label, image, "exact", H_exact))
-    for name, route in ROUTES:
-        rows.append(umbilic_row(label, image, name, route(image, 1.0)))
-show_table(pd.DataFrame(rows), index="blob")
-```
-
-It needs near-exact symmetry, so it is a synthetic-image problem:
-
-```{code-cell} ipython3
-def near_isotropic(H):
-    """Pixels where |l1 - l2| is within rounding of zero."""
-    l1, l2 = hessian_matrix_eigvals(H)
-    scale = np.maximum(np.abs(l1), np.abs(l2))
-    with np.errstate(divide="ignore", invalid="ignore"):
-        return np.nansum(np.abs(l1 - l2) / scale < 1e-12)
-
-
-blob, _ = blob_truth(BLOB_SIZE, BLOB_WIDTH, 1.0)
-show_table(pd.DataFrame(
-    [{"image": label, "pixels": image.size,
-      **{name: int(near_isotropic(route(image, 1.0))) for name, route in ROUTES}}
-     for label, image in (("camera, 256x256", PHOTO),
-                          ("Gaussian blob, 201x201", blob))]), index="image")
-```
-
-+++
-
-+++
-
-## 12. A more careful mixed element
-
-§6 put the Gaussian-derivative shortfall in the mixed element. That element is
-two passes of the first-derivative kernel, so the question is which of its
-moments is wrong.
-
-`correlate1d` at the origin returns `sum(k * x**n)` for $f = x^n$. Smoothing
-$x^3$ at scale $\sigma$ gives $x^3 + 3\sigma^2 x$, whose derivative at the
-origin is $3\sigma^2$. So the kernel owes three conditions, and the shipped one
-imposes the first two.
+## 7. A more careful mixed element
+
+The mixed element is two passes of the first-derivative kernel. `correlate1d`
+at the origin returns `sum(k * x**n)` for $f = x^n$. Smoothing $x^3$ at scale
+$\sigma$ gives $x^3 + 3\sigma^2 x$, whose derivative at the origin is
+$3\sigma^2$. So the kernel owes three conditions, and the shipped one imposes
+the first two:
 
 ```{code-cell} ipython3
 def first_moments(sigma):
@@ -842,14 +823,11 @@ show_table(pd.DataFrame([first_moments(s) for s in (0.3, 0.5, 0.8, 1.0, 2.0)]),
            index="sigma")
 ```
 
-The third moment is 270% out at `sigma` 0.3 and exact from about 0.8, which is
-where the crossover of §10 sits. Below `sigma` of about 0.5 the kernel has
-collapsed towards the plain central difference $[-\tfrac{1}{2}, 0, +\tfrac{1}{2}]$,
-whose third moment is 1 whatever `sigma` is, while the truth asks for
-$3\sigma^2$.
+The third moment is 270% out at `sigma` 0.3 and correct to 0.1% from 0.8.
+Below `sigma` of about 0.5 the kernel is close to the plain central difference,
+whose third moment is 1 at every `sigma`.
 
-Imposing it needs one more degree of freedom. Two odd basis functions carry two
-conditions.
+Two odd basis functions carry two conditions:
 
 ```{code-cell} ipython3
 def taps1_third(sigma, truncate=8):
@@ -867,14 +845,12 @@ def taps1_third(sigma, truncate=8):
 
 show_table(pd.DataFrame(
     [{"sigma": s, "cond(M)": f"{taps1_third(s)[1]:.1e}",
-      "sum(k * x)": f"{(taps1_third(s)[0] * np.arange(-(len(taps1_third(s)[0]) // 2), len(taps1_third(s)[0]) // 2 + 1)).sum():.6f}",
       "largest change vs shipped": f"{np.abs(taps1_third(s)[0] - taps(s, 1)).max():.3f}"}
      for s in (0.3, 0.5, 0.8, 1.0, 2.0)]), index="sigma")
 ```
 
-The change is 0.12 of a tap at `sigma` 0.3, 3e-4 at 0.8 and nothing at 1.0, so
-it cannot disturb the regime that already works. The 2 by 2 system is badly
-conditioned at `sigma` 0.3, which is the first thing to watch.
+The change is 0.12 of a tap at `sigma` 0.3 and below $10^{-3}$ from 0.8. The
+$2 \times 2$ system has a condition number of $10^7$ at `sigma` 0.3.
 
 ```{code-cell} ipython3
 def gd_third(image, sigma, mode="constant", cval=0, truncate=8):
@@ -897,76 +873,45 @@ def gd_third(image, sigma, mode="constant", cval=0, truncate=8):
 
 
 def mixed_row(sigma):
-    """Mixed element, angle, and shape index, for the three kernels."""
+    """Mixed element and shape-index error inside the blob, for three kernels."""
     image, H_true = blob_truth(BLOB_SIZE, BLOB_WIDTH, sigma)
-    inner = interior(sigma)
-    peak = max(np.abs(h[inner]).max() for h in H_true)
+    blob, _ = zones(BLOB_SIZE, BLOB_WIDTH, sigma)
+    peak = max(np.abs(h[blob]).max() for h in H_true)
     truth = s_from(H_true)
     row = {"sigma": sigma}
-    for name, H in (("shipped", gd_hessian(image, sigma)),
-                    ("third moment", gd_third(image, sigma))):
-        row[f"Hij, {name}"] = f"{np.abs(H[1][inner] - H_true[1][inner]).max() / peak:.1e}"
-        row[f"angle, {name}"] = f"{angle_error(H, H_true, inner):.1e}"
-        row[f"median |ds|, {name}"] = \
-            f"{np.nanmedian(np.abs(s_from(H)[inner] - truth[inner])):.1e}"
-    row["median |ds|, FD"] = \
-        f"{np.nanmedian(np.abs(s_from(fd_hessian(image, sigma))[inner] - truth[inner])):.1e}"
+    for name, route in (("FD", fd_hessian), ("GD", gd_hessian), ("GD, third", gd_third)):
+        H = route(image, sigma)
+        row[f"Hij, {name}"] = f"{np.abs(H[1] - H_true[1])[blob].max() / peak:.1e}"
+        row[f"s, {name}"] = f"{np.mean(np.abs(s_from(H) - truth)[blob]):.1e}"
     return row
 
 
 show_table(pd.DataFrame([mixed_row(s) for s in (0.3, 0.5, 0.8, 1.0)]), index="sigma")
 ```
 
-The mixed element improves by about fifty times at the small scales where it
-was wrong, and by less as the shipped kernel comes right. The typical
-shape-index pixel improves by three to six times, which is what §2 says it must:
-the angle and the shape index move together, and they do.
-
-It still does not reach the finite-difference route, and the crossover barely
-moves.
-
-```{code-cell} ipython3
-def crossover_for(route, grid=np.arange(0.3, 1.21, 0.05)):
-    """The smallest sigma at which `route` overtakes finite differences."""
-    for sigma in grid:
-        image, H_true = blob_truth(BLOB_SIZE, BLOB_WIDTH, sigma)
-        inner = interior(sigma)
-        truth = s_from(H_true)
-        fd = np.nanmean(np.abs(s_from(fd_hessian(image, sigma))[inner] - truth[inner]))
-        gd = np.nanmean(np.abs(s_from(route(image, sigma))[inner] - truth[inner]))
-        if gd < fd:
-            return sigma
-    return np.nan
-
-
-show_table(pd.DataFrame(
-    [{"kernel": name, "crossover sigma": f"{crossover_for(route):.2f}"}
-     for name, route in (("shipped", gd_hessian), ("third moment", gd_third))]),
-    index="kernel")
-```
-
-So the correction is worth having on its own account — a fifty times better
-mixed element at small `sigma`, negligible above 0.8, one more condition on a
-kernel that already carries two — and it is not an answer to §10. The gap below the
-crossover is not the mixed element alone.
+The third moment improves the mixed element by a factor of about 50 at `sigma`
+0.3 and 0.5, and the shape index inside the blob by about 2. Above `sigma` 0.8
+it changes little, because the shipped kernel already has the right third
+moment there.
 
 +++
 
-### 12.1 The blob flatters finite differences
+## 8. The blob flatters finite differences
 
-§4 measures against a Gaussian blob because that is the only shape with a closed
-form. A blob is also the input least able to show what finite differences get
-wrong, because a central difference errs on high spatial frequencies and a
-smoothed blob has almost none.
+A central difference errs on high spatial frequencies, and a smoothed blob has
+almost none. On the photograph, at `sigma` 2 and above, the Gaussian-derivative
+shape index is the reference: §5 puts its blob error below $10^{-13}$ from
+`sigma` 1.5.
 
 ```{code-cell} ipython3
-def fd_cost(image, sigma, truth=None):
-    """FD's error, and how often it changes the category."""
-    inner = interior(sigma)
-    a = s_from(fd_hessian(image, sigma))[inner]
-    b = (s_from(gd_hessian(image, sigma))[inner] if truth is None
-         else s_from(truth)[inner])
-    ok = np.isfinite(a) & np.isfinite(b)
+def fd_cost(image, sigma, truth=None, mask=None):
+    """FD's distance from a reference, and how often it changes the class."""
+    a = s_from(fd_hessian(image, sigma))
+    b = s_from(gd_hessian(image, sigma) if truth is None else truth)
+    if mask is None:
+        mask = np.zeros(image.shape, bool)
+        mask[interior(sigma)] = True
+    ok = mask & np.isfinite(a) & np.isfinite(b)
     return (f"{np.median(np.abs(a - b)[ok]):.4f}",
             f"{100 * np.mean(np.digitize(a[ok], BINS) != np.digitize(b[ok], BINS)):.2f}%")
 
@@ -974,82 +919,575 @@ def fd_cost(image, sigma, truth=None):
 rows = []
 for sigma in (2.0, 4.0, 8.0):
     blob_image, blob_H = blob_truth(401, 12.0, sigma)
-    med_b, cls_b = fd_cost(blob_image, sigma, truth=blob_H)
+    med_b, cls_b = fd_cost(blob_image, sigma, truth=blob_H,
+                           mask=zones(401, 12.0, sigma)[0])
     med_p, cls_p = fd_cost(PHOTO, sigma)
     rows.append({"sigma": sigma, "blob, median |ds|": med_b, "blob, wrong class": cls_b,
                  "camera, median |ds|": med_p, "camera, wrong class": cls_p})
 show_table(pd.DataFrame(rows), index="sigma")
 ```
 
-At `sigma` 2 the finite-difference error is twenty times larger on the
-photograph than on the blob, and it moves 16% of pixels across a category
-boundary against 0.03%. It decays as `sigma` removes the frequencies the stencil
-gets wrong, and by `sigma` 8 it is under 1% on both.
+At `sigma` 2 the finite-difference error on the photograph is about 20 times
+its error inside the blob. It moves 16% of the photograph's pixels across a
+class boundary, against 0.6% of the blob's. By `sigma` 8 it is under 1% on both
+images.
 
-Part of that gap is that a photograph has more pixels sitting near a boundary,
-but only a small part.
+A photograph could have more pixels near a class boundary, which would inflate
+its class changes. Measure the distance to the nearest edge:
 
 ```{code-cell} ipython3
-def boundary_distance(image, sigma):
-    """Median distance from the shape index to the nearest category edge."""
-    inner = interior(sigma)
-    s = s_from(gd_hessian(image, sigma))[inner]
-    s = s[np.isfinite(s)]
+def boundary_distance(image, sigma, mask=None):
+    """Median distance from the shape index to the nearest class edge."""
+    s = s_from(gd_hessian(image, sigma))
+    if mask is None:
+        mask = np.zeros(image.shape, bool)
+        mask[interior(sigma)] = True
+    s = s[mask & np.isfinite(s)]
     return np.median(np.min(np.abs(s[..., None] - BINS), axis=-1))
 
 
 blob_image, _ = blob_truth(401, 12.0, 2.0)
 show_table(pd.DataFrame(
-    [{"image": label, "median distance to a category edge":
-      f"{boundary_distance(image, 2.0):.4f}"}
-     for label, image in (("camera", PHOTO), ("Gaussian blob", blob_image))]),
+    [{"image": "camera", "median distance to a class edge":
+      f"{boundary_distance(PHOTO, 2.0):.4f}"},
+     {"image": "Gaussian blob", "median distance to a class edge":
+      f"{boundary_distance(blob_image, 2.0, zones(401, 12.0, 2.0)[0]):.4f}"}]),
     index="image")
 ```
 
-A factor of 1.8 in boundary proximity against a factor of 20 in the error, so
-most of the difference is the error itself and not the binning. Read §4's
-numbers as the best case for finite differences, not the typical one.
+Inside the blob the shape index is closer to a class edge than on the
+photograph, so boundary proximity does not explain the gap. The difference is
+in the size of the error. Read §5's finite-difference numbers as a best case.
 
 +++
 
-## 13. Summary
+## 9. Noise and cost
+
+The finite-difference shape index is steadier under noise, by a factor of
+about 1.8 at `sigma` 0.5 and 1, and 1.2 at `sigma` 2, at the larger noise
+amplitude. The test adds white noise to the blob and measures the spread of
+$s$ over pixels that carry the top 70% of curvature.
+
+```{code-cell} ipython3
+NOISE = {}
+
+
+def noise_row(sigma, amplitude, draws=12):
+    """Spread of s under repeated noise, where the blob has real curvature."""
+    image, _ = blob_truth(BLOB_SIZE, BLOB_WIDTH, sigma)
+    _, H_true = blob_truth(BLOB_SIZE, BLOB_WIDTH, sigma)
+    strength = np.sqrt(H_true[0]**2 + 2 * H_true[1]**2 + H_true[2]**2)
+    inner = interior(sigma)
+    mask = (strength > 0.3 * strength.max())[inner]
+    rng = np.random.default_rng(0)
+    draws_by_route = {SHORT[name]: [] for name, _ in ROUTES}
+    for _ in range(draws):
+        noisy = image + amplitude * rng.normal(size=image.shape)
+        for name, route in ROUTES:
+            draws_by_route[SHORT[name]].append(s_from(route(noisy, sigma))[inner])
+    spread = {k: np.nanmean(np.nanstd(np.stack(v), axis=0)[mask])
+              for k, v in draws_by_route.items()}
+    NOISE[sigma, amplitude] = spread["GD"] / spread["FD"]
+    return {"sigma": sigma, "noise": amplitude,
+            **{k: f"{v:.4f}" for k, v in spread.items()},
+            "GD / FD": f"{NOISE[sigma, amplitude]:.2f}"}
+
+
+show_table(pd.DataFrame([noise_row(s, a) for s in (0.5, 1.0, 2.0)
+                         for a in (0.005, 0.02)]), index="sigma")
+```
+
+Both routes have a gain of 1 on a quadratic, so the noise each element passes
+is a fair comparison. White noise of unit variance gives an output standard
+deviation equal to the root sum of squares of the element's impulse response:
+
+```{code-cell} ipython3
+def noise_gain(route, sigma, size=81):
+    """Root sum of squares of each Hessian element's impulse response."""
+    impulse = np.zeros((size, size))
+    impulse[size // 2, size // 2] = 1
+    return [np.sqrt((h**2).sum()) for h in route(impulse, sigma)]
+
+
+def quadratic_gain(route, sigma, size=81):
+    """Response of H_ii to r**2 / 2 at the centre: 1 for a correct gain."""
+    r = np.arange(size, dtype=float)[:, None] - size // 2
+    image = np.broadcast_to(r**2 / 2, (size, size)).copy()
+    return route(image, sigma)[0][size // 2, size // 2]
+
+
+show_table(pd.DataFrame(
+    [{"sigma": s, "route": SHORT[name],
+      "gain on r**2 / 2": f"{quadratic_gain(route, s):.6f}",
+      **{f"noise gain, {e}": f"{g:.3f}"
+         for e, g in zip(("Hii", "Hij", "Hjj"), noise_gain(route, s))}}
+     for s in (0.5, 1.0, 2.0) for name, route in ROUTES]), index="sigma")
+```
+
+At equal gain on a quadratic, the finite-difference elements pass less noise,
+by a factor of about 5 on the diagonals at `sigma` 0.5 and about 2 at
+`sigma` 1. The doubled central difference has zero response at the Nyquist
+frequency, and the $(1, -2, 1)$ stencil that the corrected kernel approaches
+has its largest response there.
+
+Cost:
+
+```{code-cell} ipython3
+TIME_RATIO = {}
+rows = []
+for sigma in (0.5, 1.0, 2.0, 4.0):
+    timing = {}
+    for name, route in ROUTES:
+        runs = []
+        for _ in range(3):                      # best of three, not the mean
+            started = time.perf_counter()
+            route(PHOTO, sigma)
+            runs.append(time.perf_counter() - started)
+        timing[SHORT[name]] = min(runs)
+    TIME_RATIO[sigma] = timing["GD"] / timing["FD"]
+    rows.append({"sigma": sigma, **{n: f"{t * 1e3:.1f} ms" for n, t in timing.items()},
+                 "GD / FD": f"{TIME_RATIO[sigma]:.1f}x"})
+show_table(pd.DataFrame(rows), index="sigma")
+```
+
+The finite-difference route smooths once, with a kernel of about $8\sigma$
+taps, and then takes cheap differences. The Gaussian-derivative route makes two
+passes for each of three elements, with kernels of about $16\sigma$ taps. So
+the ratio grows with `sigma`.
+
++++
+
+## 10. What other libraries do
+
+The shape index appears elsewhere almost only on explicit surfaces, such as
+triangle meshes. There a quadratic is fitted to a vertex neighbourhood, so the
+choice between finite differences and Gaussian derivatives does not arise. The
+two implementations read here are FreeSurfer's `mris_curvature_stats` and
+`pycurv`. Neither OpenCV nor Pillow has a shape index or a curvedness:
+
+```{code-cell} ipython3
+def matching(module):
+    """Public names in `module` that mention the shape index or curvedness."""
+    return [n for n in dir(module)
+            if "shapeindex" in n.lower().replace("_", "") or "curvedness" in n.lower()]
+
+
+show_table(pd.DataFrame(
+    [{"library": label, "matching names": ", ".join(matching(m)) or "none"}
+     for label, m in (("cv2", cv2), ("PIL.ImageFilter", PIL.ImageFilter))]),
+    index="library")
+```
+
+The two surface implementations disagree with scikit-image in two ways. The
+first is the expression:
+
+```{code-cell} ipython3
+DOME = (-1.0, -2.0)            # k1 >= k2, both negative: a dome
+
+
+def library_forms(k1, k2):
+    """The same dome, under each library's published expression."""
+    return [
+        {"library": "scikit-image, after Koenderink",
+         "expression": "(2/pi) atan((k2+k1)/(k2-k1))",
+         "s": f"{2 / pi * atan((k2 + k1) / (k2 - k1)):+.3f}"},
+        {"library": "pycurv",
+         "expression": "(2/pi) atan((k1+k2)/(k1-k2))",
+         "s": f"{2 / pi * atan((k1 + k2) / (k1 - k2)):+.3f}"},
+        {"library": "FreeSurfer",
+         "expression": "atan((k1+k2)/(k2-k1))",
+         "s": f"{atan((k1 + k2) / (k2 - k1)):+.3f}"},
+    ]
+
+
+show_table(pd.DataFrame(library_forms(*DOME)), index="library")
+```
+
+`pycurv` reverses the denominator, so with the same curvatures its value is the
+negative of Koenderink's. Whether its output differs in sign also depends on
+its sign convention for curvature, which this notebook does not test.
+FreeSurfer omits the $2/\pi$, so its range is $[-\pi/2, +\pi/2]$.
+
+The second is the umbilic of §3. FreeSurfer returns 0 when the two curvatures
+are equal (`mris_curvature_stats.cpp`):
+
+```c
+return (af_k1 == af_k2 ? 0 : atan((af_k1+af_k2)/(af_k2 - af_k1)));
+```
+
+The comment in the same file says that "The 'Shape Index' can be problematic
+due to the atan calculations". `pycurv` returns 0 only when both curvatures
+are zero (`curvature_definitions.py`). At an umbilic its Python float division
+raises:
+
+```{code-cell} ipython3
+def pycurv_shape_index(kappa_1, kappa_2):
+    """`pycurv.curvature_definitions.calculate_shape_index`, transcribed."""
+    if kappa_1 == 0 and kappa_2 == 0:
+        return 0
+    return 2 / pi * atan((kappa_1 + kappa_2) / (kappa_1 - kappa_2))
+
+
+try:
+    pycurv_shape_index(-1.0, -1.0)
+except ZeroDivisionError as err:
+    print(f"ZeroDivisionError: {err}")
+```
+
+None of the three gives the $\pm 1$ that the paper asks for at an umbilic, and
+none gives NaN only at the planar point.
+
+### 10.1 Published forms
+
+The papers of §13 use four forms of the same quantity. They differ in range, in
+sign convention, and in what happens at a tie. The cell below evaluates each
+form as printed, with NumPy floats, so that division by zero gives an infinity.
+A form is correct at a tie when the cap tie has the same sign as the dome.
+
+```{code-cell} ipython3
+def published_forms(k_max, k_min):
+    """Each published shape index expression, for curvatures k_max >= k_min."""
+    k1, k2 = np.float64(k_max), np.float64(k_min)
+    H, K = (k1 + k2) / 2, k1 * k2
+    with np.errstate(divide="ignore", invalid="ignore"):
+        return {
+            "Koenderink 1992; skimage; Bonde 2013":
+                (2 / np.pi) * np.arctan((k2 + k1) / (k2 - k1)),
+            "Dorai & Jain 1997; Yoshida 2001 (0 to 1)":
+                0.5 - np.arctan((k1 + k2) / (k1 - k2)) / np.pi,
+            "Worthington & Hancock 2001; Goncalves 2016":
+                (2 / np.pi) * np.arctan((k1 + k2) / (k1 - k2)),
+            "Yang 2017, Eq. 5 with the mean curvature":
+                (2 / np.pi) * np.arctan(H / np.sqrt(H**2 - K)),
+        }
+
+
+shapes = {"dome (-1, -2)": (-1.0, -2.0), "cap, tie (-1, -1)": (-1.0, -1.0),
+          "cup, tie (+1, +1)": (1.0, 1.0)}
+forms = pd.DataFrame({name: published_forms(*k) for name, k in shapes.items()})
+centre = forms.copy()
+centre.loc["Dorai & Jain 1997; Yoshida 2001 (0 to 1)"] -= 0.5   # midpoint of 0 to 1
+same_side = np.sign(centre["cap, tie (-1, -1)"]) == np.sign(centre["dome (-1, -2)"])
+table = forms.map(lambda v: f"{v:+.3f}")
+table["cap tie on the dome's side"] = np.where(same_side, "yes", "NO")
+show_table(table.rename_axis("form"), index=True)
+```
+
+Only Koenderink's printed form fails at a tie, because its denominator,
+$\kappa_2 - \kappa_1$, is never positive. scikit-image follows that form. The
+other three put $\kappa_{max} - \kappa_{min}$ in the denominator, which is never
+negative, so a tie gives the infinity of the right sign. The form of Dorai and
+Jain is $(s + 1)/2$. The forms of Worthington and Hancock, Gonçalves and
+colleagues, and Yang and colleagues are $-s$, which matches their own sign
+conventions for curvature.
+
+The form of Yang and colleagues has a second weakness: it needs
+$H^2 - K \geq 0$, and near a tie rounding can make that difference negative.
+`hessian_matrix_eigvals` takes the root of a sum of squares, which cannot be
+negative:
+
+```{code-cell} ipython3
+rng = np.random.default_rng(1)
+kappa = rng.uniform(-1, 1, 100_000)
+near = kappa * (1 + 1e-12 * rng.uniform(-1, 1, kappa.size))   # a near tie
+H_mean, K_gauss = (kappa + near) / 2, kappa * near
+pairs = [kappa, np.zeros_like(kappa), near]
+show_table(pd.DataFrame([
+    {"form": "Yang 2017, Eq. 5",
+     "NaN fraction": f"{np.mean(H_mean**2 - K_gauss < 0):.1%}"},
+    {"form": "scikit-image, from hessian_matrix_eigvals",
+     "NaN fraction": f"{np.mean(np.isnan(s_library(pairs))):.1%}"}]), index="form")
+```
+
+The sample is 100 000 pairs whose relative gap is below $10^{-12}$. The form of
+Yang and colleagues gives NaN for about a fifth of them.
+
+As printed, Eq. 3 of that paper omits the factor $\tfrac12$ of the mean
+curvature. Then Eq. 4 does not give the curvatures of a sphere:
+
+```{code-cell} ipython3
+a_ = -1.0                       # f_xx = f_yy = a, f_xy = f_x = f_y = 0: a sphere cap
+H_printed, K_printed = a_ + a_, a_ * a_
+root = np.sqrt(H_printed**2 - K_printed)
+print(f"Eq. 3 and 4 as printed: k1, k2 = {H_printed + root:+.3f}, "
+      f"{H_printed - root:+.3f}; want {a_:+.3f}, {a_:+.3f}")
+```
+
+This notebook cannot tell whether the error is in the paper only or also in
+the code behind its results.
+
+### 10.2 The Hessian is not the intensity surface
+
+The docstring describes the image as a surface "with intensities representing
+heights". The principal curvatures of that surface equal the eigenvalues of
+the Hessian only where the gradient is zero. Yang and colleagues compute the
+curvature of that surface, with the gradient terms. Yoshida and Näppi compute
+the curvature of the iso-surface. scikit-image takes the Hessian eigenvalues.
+§2 shows that the Hessian shape index does not change when the intensity is
+scaled. The surface shape index does:
+
+```{code-cell} ipython3
+def blob_gradient(size, width, sigma):
+    """The exact gradient of the smoothed blob."""
+    r, c = [x - size // 2 for x in np.indices((size, size), dtype=float)]
+    spread = width**2 + sigma**2
+    amp = (width**2 / spread) * np.exp(-(r**2 + c**2) / (2 * spread))
+    return -amp * r / spread, -amp * c / spread
+
+
+def surface_s(H, grad):
+    """Shape index of the intensity surface z = f(r, c), from its K and H."""
+    hrr, hrc, hcc = H
+    gr, gc = grad
+    w = 1 + gr**2 + gc**2
+    K = (hrr * hcc - hrc**2) / w**2
+    M = (hrr * (1 + gc**2) - 2 * gr * gc * hrc + hcc * (1 + gr**2)) / (2 * w**1.5)
+    return -(2 / np.pi) * np.arctan2(2 * M, 2 * np.sqrt(np.maximum(M**2 - K, 0)))
+
+
+_, H_blob = blob_truth(BLOB_SIZE, BLOB_WIDTH, 1.0)
+grad_blob = blob_gradient(BLOB_SIZE, BLOB_WIDTH, 1.0)
+blob_zone, _ = zones(BLOB_SIZE, BLOB_WIDTH, 1.0)
+rows = []
+for amplitude in (0.01, 1.0, 10.0, 100.0):
+    H_a = [amplitude * h for h in H_blob]
+    s_h = s_from(H_a)
+    s_g = surface_s(H_a, [amplitude * g for g in grad_blob])
+    gap = np.abs(s_g - s_h)[blob_zone]
+    changed = np.digitize(s_g[blob_zone], BINS) != np.digitize(s_h[blob_zone], BINS)
+    rows.append({"blob amplitude": amplitude,
+                 "median |s_surface - s_Hessian|": f"{np.median(gap):.1e}",
+                 "pixels changing class": f"{100 * np.mean(changed):.1f}%"})
+show_table(pd.DataFrame(rows), index="blob amplitude")
+```
+
+At a blob amplitude of 1 or less the two agree to $2 \times 10^{-5}$. At an
+amplitude of 10 the surface shape index moves 13% of the blob pixels to another
+class. At 100, which is a moderate blob in an 8-bit image, it moves 58%. Yang
+and colleagues state that the shape index "can work on different variation
+range of intensity" because it "is a scale-invariant descriptor". That holds
+for the Hessian form, not for the surface form that they compute.
+
++++
+
+## 11. Ways forward
+
+### 11.1 Resolve the umbilic
+
+Replace the quotient with the two-argument arctangent of §3, and return NaN
+only where both eigenvalues are zero. This changes only exact ties, and the
+photograph has none. The docstring example changes from $-1$ to $+1$ at the
+bright pixel.
+
+### 11.2 Move `shape_index` to Gaussian derivatives
+
+The measured gains and costs, from §4, §5 and §9:
+
+```{code-cell} ipython3
+show_table(pd.DataFrame(
+    [{"sigma": s,
+      "blob error, FD / GD": f"{BLOB_ERR[s]['FD'] / BLOB_ERR[s]['GD']:.1e}",
+      "camera pixels changing class": f"{100 * CLASS_CHANGE[s]:.0f}%",
+      "noise spread, GD / FD (0.02)": f"{NOISE[s, 0.02]:.2f}",
+      "time, GD / FD": f"{TIME_RATIO[s]:.1f}x"}
+     for s in (0.5, 1.0, 2.0)]), index="sigma")
+```
+
+The change makes the shape index closer to the closed form at every `sigma`.
+It also reclassifies most of a photograph at small `sigma`, passes more noise,
+and costs more time.
+
+### 11.3 Impose the third moment on the first-derivative kernel
+
+§7 measures a factor of about 2 in the shape index inside the blob at `sigma`
+0.3 and 0.5, and little change above 0.8. The cost is one more condition per
+kernel and a badly conditioned solve at `sigma` 0.3.
+
++++
+
+## 12. What not to conclude
+
+### 12.1 That finite differences are more accurate at small `sigma`
+
+An average over the whole interior of the blob says so, and §5 shows why: most
+of the pixels are in the far field, below $10^{-3}$ of the peak. There the blob
+is close to an exponential, and §6 proves that the finite-difference shape
+index is exact on any exponential. That is a property of a shape that an 8-bit
+image cannot store in a blob tail, not a general accuracy.
+
+### 12.2 That a switch of route at some `sigma` gets the best of both
+
+§5 finds no `sigma` where finite differences are closer inside the blob. A
+switch would also make the shape index jump across the switch point:
+
+```{code-cell} ipython3
+def step(low, high):
+    """What a reader sees across a sigma step, switching or not."""
+    inner = interior(high)
+    before = s_from(fd_hessian(PHOTO, low))[inner]
+    after = s_from(gd_hessian(PHOTO, high))[inner]
+    unswitched = s_from(gd_hessian(PHOTO, low))[inner]
+    ok = np.isfinite(before) & np.isfinite(after) & np.isfinite(unswitched)
+    return {"sigma step": f"{low} to {high}",
+            "median |ds|, switching route": f"{np.median(np.abs(after - before)[ok]):.3f}",
+            "median |ds|, staying on one": f"{np.median(np.abs(after - unswitched)[ok]):.3f}"}
+
+
+show_table(pd.DataFrame([step(0.79, 0.81), step(0.75, 0.85)]), index="sigma step")
+```
+
+Across a `sigma` step of 0.02, a switch moves the median shape index by about
+11 times as much as staying on one route.
+
+### 12.3 That lower noise means a better estimate
+
+§9 shows the finite-difference elements pass less noise at equal gain on a
+quadratic. They also respond less to the high frequencies in real structure,
+which is the error §8 measures on the photograph.
+
++++
+
+## 13. What the literature says
+
+### 13.1 The measure
+
+Koenderink and van Doorn define the shape index and the curvedness together, as
+the polar angle and radius of the $(\kappa_1, \kappa_2)$ plane
+[@koenderink1992surface_shape]. §2 and §3 rest on that paper.
+
+Its first large use was on range data. Dorai and Jain describe free-form
+objects by maximal patches of constant shape index and match views through a
+"shape spectrum", the histogram of the index over a surface
+[@dorai1997cosmosa_representation; @dorai1997shape_spectrum]. They fit a
+surface over a $5 \times 5$ neighbourhood of the range image, smooth the
+curvatures for 15 iterations, and label planar points with a symbol or the
+value 2.0. Their index runs from 0 to 1. Worthington and Hancock bring the
+index to images: they recover a field of surface normals by shape-from-shading,
+take the curvatures as the eigenvalues of the matrix of derivatives of the
+normals, and recognise objects from histograms of the index
+[@worthington2001object_recognition]. Bonde, Badrinarayanan and Cipolla select
+a characteristic scale at each point of a point cloud before they compute the
+index [@bonde2013multi_scale]. §10.1 compares the forms of the index that these
+papers print.
+
+### 13.2 The volumetric Hessian
+
+Yoshida and Näppi compute the curvature of the iso-surface through each voxel
+of a CT volume, from the first and second derivatives of the volume, and keep
+voxels by hysteresis thresholds on the shape index and the curvedness
+[@yoshida2001threedimensional_computeraided; @yoshida2002computerized_detection].
+Their index is the 0 to 1 form of Dorai and Jain, defined "where
+$\kappa_1 \neq \kappa_2$". So the definition leaves out the umbilic, which is
+the top of the cap class they look for. The 2002 paper smooths the volume with
+a 3-D Gaussian. Neither paper says how the derivatives are taken.
+
+Gonçalves, Novo and Campilho compute the Hessian by convolution with Gaussian
+second derivatives, at `sigma` from 0.5 to 3.5, and take the index from the
+largest and smallest of the three eigenvalues [@goncalves2016hessian_based].
+This is the setting closest to scikit-image. They do not say how the kernels
+are sampled.
+
+Yang, Han and Chen smooth each slice with an $11 \times 11$ Gaussian kernel and
+compute the curvature of the intensity surface in a $7 \times 7$ neighbourhood
+[@yang2017automatic_segmentation]. §10.1 and §10.2 test their formulas.
+
+Ben-Noah, Hidalgo and Dentz do not use the shape index
+[@ben_noah2024porespace_partitioning]. They use the determinant and the
+eigenvalues of the Hessian of a distance map, to find maxima and saddles. Their
+derivatives are central differences in the interior and one-sided differences
+at the edges, which is the scheme of `np.gradient`, applied without smoothing.
+
+Of this lineage, Gonçalves and colleagues and Ben-Noah and colleagues name
+their derivative operator. None discusses an exact tie.
+
+### 13.3 The discretisation
+
+Lindeberg's discrete analogue of the Gaussian and its central-difference
+derivatives are from 1990 and 1993 [@lindeberg1990scalespace_discrete;
+@lindeberg1993discrete_derivative]. The 2024 paper compares sampled, integrated and
+discrete-analogue kernels with the continuous theory
+[@lindeberg2024discrete_gaussian]. Its abstract puts the limit for sampled Gaussian
+derivatives at a standard deviation of about 0.75, below which their estimates
+"are, however, not numerically accurate or consistent". The paper measures the
+responses of each kernel to monomials, but it does not impose them. So the
+moment-corrected kernels of §1 are not among the discretisations it compares.
+
+The 2025 paper defines "hybrid" discretisations: a normalised sampled Gaussian
+followed by central differences [@lindeberg2025approximation_properties]. Its
+second-order operator is $\delta_{xx} = (1, -2, 1)$, with $\delta_x$ for odd
+orders. The finite-difference route of §1 is a hybrid in that sense, with one
+difference: it applies $\delta_x$ twice for the diagonal elements. That is the
+shared operator that §6 shows to be exact on exponentials. Lindeberg's hybrid
+pairs $(1, -2, 1)$ on the diagonals with $\delta_x \delta_y$ on the mixed
+element, which is the pair whose determinant §6 shows to be negative.
+
+Both papers use the mixed derivative inside the determinant of the Hessian and
+the ridge strength $L_{pp}$. Their test patterns are a Gaussian blob, measured
+at its centre, and a ridge aligned with an axis. At both, $L_{xy} = 0$. This is
+a reading of the test design, not a result of the papers: the experiments do
+not test whether the mixed and pure second-derivative discretisations agree.
+
+Farid and Simoncelli design the prefilter and the derivative filters together,
+so that directional derivatives are rotation invariant
+[@farid2004differentiation_discrete]. For second order, the directional derivative
+combines $D_{xx}$, $D_{xy}$ and $D_{yy}$, so the constraint couples the pure
+and mixed filters. That coupling is the property the shape index needs; the
+reading that it is the same property is this notebook's, not theirs.
+
+Rey-Otero and Delbracio compare three discrete versions of Gaussian smoothing
+at low blur, including one computed through the discrete Fourier transform
+[@rey_otero2016computing_exact]. DIPlib offers Gaussian filters by direct
+convolution, recursive filtering and the Fourier transform
+[@diplib_linear_filters]. The reference implementation of the discrete
+analogue is Lindeberg's own toolbox [@lindeberg_pyscsp].
+
+Lindeberg's $\gamma$-normalised derivatives select a scale by the maximum of a
+normalised response over $\sigma$ [@lindeberg1998feature_detection;
+@lindeberg1998edge_detection]. Majer shows that the choice of $\gamma$
+decides whether a second-derivative filter detects ridges or edges
+[@majer2004influence_scale]. The shape index discards the
+magnitude that normalisation acts on, so scale selection for it has to use the
+curvedness.
+
++++
+
+## 14. Summary
 
 | question | answer |
 | --- | --- |
-| how much does the shape index move | 71% of pixels change class at `sigma` 0.5, 46% at 1, 16% at 2, 5% at 4 |
-| which is closer to a closed form | finite differences below the crossover, Gaussian derivatives above, by up to $4 \times 10^{4}$ |
-| where the crossover is | `sigma` 0.70 for a blob of width 6; 0.55 to 0.70 over widths 2 to 16 |
-| is the better Hessian the better shape index | no: at `sigma` 0.3 and 0.5 the Gaussian-derivative Hessian is closer and its shape index is further |
-| why | the shape index sees only the eigenvalue pair's angle; the Gaussian-derivative angle error is all in the mixed element, and the finite-difference one is three errors cancelling |
-| reasons to keep the old route | accuracy below the crossover; 1.2 to 1.8 times steadier under noise; cheaper, and more so as `sigma` grows; bit-reproducibility of published numbers |
-| should the library switch route at small `sigma` | no: the crossover moves with the image, and a switch jumps `s` by 0.134 against a real change of 0.011 |
-| does a better mixed element close the gap | no: the third moment improves the mixed element 50x and the typical pixel 3-6x, and moves the crossover only 0.70 to 0.65 |
-| is the FD error important at large `sigma` | on a photograph yes up to `sigma` about 4 (16% of pixels miscategorised at 2, 5% at 4, 0.7% at 8); on a smooth blob never (under 0.1%) |
-| do other libraries agree | `pycurv` has the opposite sign, FreeSurfer omits the $2/\pi$; none matches the paper at the umbilic |
-| is the accuracy reason sound | no: §6 shows it rests on a cancellation, not on any element being right |
-| what happens at an umbilic | the paper says $s = \pm 1$, determinate; the formula reads the sign of a zero and cannot deliver it |
+| how much does the shape index move | 71% of photograph pixels change class at `sigma` 0.5, 46% at 1, 16% at 2, 5% at 4 (§4) |
+| which is closer to a closed form, inside the blob | Gaussian derivatives at every `sigma` tested, from 0.3 to 4; also at every blob width from 2 to 16, tested at `sigma` 0.3 and 0.5 (§5) |
+| where finite differences are closer | in the far field, below $10^{-3}$ of the peak, at `sigma` 0.3 and 0.5 (§5) |
+| why | the far field is close to an exponential, and finite differences give the exact shape index of any exponential (§6) |
+| where the finite-difference error comes from inside the blob | mostly the diagonal elements, from the doubled central difference (§6) |
+| what the formula does at an umbilic | where the eigenvalues tie exactly it gives the wrong end of the scale, in the library docstring example too (§3) |
+| the fix for the umbilic | $s = -(2/\pi)\,\operatorname{atan2}(\lambda_1 + \lambda_2, \lambda_1 - \lambda_2)$, NaN only at the planar point; no change on the photograph (§3) |
+| does a third-moment mixed kernel help | about 2 times inside the blob at `sigma` 0.3 and 0.5, little above 0.8 (§7) |
+| reasons to keep finite differences | less noise per unit gain, lower cost, and reproduction of earlier results (§9) |
+| other libraries | `pycurv` reverses the denominator and raises at an umbilic; FreeSurfer omits $2/\pi$ and returns 0 at an umbilic (§10) |
+| published forms | of four printed forms, only Koenderink's, which scikit-image uses, fails at a tie; Yang's form gives NaN at near ties (§10.1) |
+| Hessian or intensity surface | the Hessian shape index is invariant to intensity scale; the surface shape index is not (§10.2) |
 
-**Limits.** One photograph (`camera`, decimated to 256²) and one synthetic
-Gaussian blob of width 6, at `sigma` from 0.3 to 4, in two dimensions only. The
-closed form is a single isotropic blob; a scene of several blobs at different
-widths is `hessian_review.md`'s corpus, not this one. The crossover near `sigma`
-0.70 is measured on that one blob family and its position moves with the
-image; §10 measures that movement only over blob width, not over image content. The noise figures are 12 draws at two amplitudes on pixels carrying the
-top 70% of curvature, so they say nothing about low-curvature regions, where
-both routes return essentially noise. The timings are single runs on one
-machine. The reading of Koenderink and van Doorn in §2 and §8.2 is of their
-definitions and their statements about planar and umbilical points; this
-notebook does not reproduce their psychophysics. `float32` input is not tested, nor is `mode` other than the default
-`constant`, and the Gaussian-derivative route is the transcription above rather
-than an import, because the installed scikit-image here predates the change.
+**Limits.** One photograph (`camera`, decimated to 256 by 256) and one family
+of isotropic Gaussian blobs, at `sigma` from 0.3 to 8, in two dimensions only.
+The split at $10^{-3}$ of the peak is a choice; §5 shows how the result moves
+with it. The closed form exists only for the blob, so the photograph has no
+truth, and §8 uses the Gaussian-derivative route as its reference. The noise
+figures are 12 draws at two amplitudes on pixels that carry the top 70% of
+curvature. The timings are the best of three runs on one machine. `float32`
+input and `mode` other than `constant` are not tested. The Gaussian-derivative
+route is a transcription, because the installed scikit-image does not have the
+branch. The sign convention of `pycurv` is not tested. §10.1 evaluates the printed
+formulas of the papers, not their code.
 
 ```{code-cell} ipython3
 installed_is_fd = np.array_equal(
     np.nan_to_num(shape_index(PHOTO, sigma=1.0), nan=-9),
-    np.nan_to_num(s_from(fd_hessian(PHOTO, 1.0)), nan=-9))
+    np.nan_to_num(s_library(fd_hessian(PHOTO, 1.0)), nan=-9))
 
 print(f"scikit-image  {ski.__version__}")
 print(f"scipy         {__import__('scipy').__version__}")
+print(f"opencv        {cv2.__version__}")
 print("installed shape_index route: "
       f"{'finite differences' if installed_is_fd else 'Gaussian derivatives'}")
 ```

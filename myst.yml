@@ -8,11 +8,12 @@ project:
   github: https://github.com/scikit-image/skimage-workbooks
   toc:
     - file: index.md
-    - file: notebooks/on_taps.md
     - file: notebooks/on_shape_index.md
     - file: notebooks/on_pyramid_laplacian.md
     - file: notebooks/on_hessian_filter.md
     - file: notebooks/on_hessian.md
+    - file: notebooks/on_taps.md
+    - file: notebooks/on_gaussian_sum_images.md
     - file: notebooks/hessian_testing.md
     - file: notebooks/hessian_port_notes.md
     - file: notebooks/frangi_testing.md
