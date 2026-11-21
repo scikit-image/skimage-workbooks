@@ -12,8 +12,9 @@ kernelspec:
   language: python
 ---
 
-:::{assisted-by}
-claude-code:claude-opus-5
+:::{changelog}
+2026-11-21 | cursor:composer | Fix truncate typo in order-2 taps demo cell
+2026-09-22 | claude-code:claude-opus-5 | Create workbook
 :::
 
 `hessian_matrix` builds each element of the Hessian. Up to scikit-image 0.26 it
@@ -150,22 +151,24 @@ Let's consider the taps here.  Notice the double correction for the sum=0 condit
 
 ```{code-cell} ipython3
 sigma = 0.25
-order = 2
-trancate = 8
-
+truncate = 8
 radius = int(truncate * sigma + 0.5)
 x = np.arange(-radius, radius + 1, dtype=float)
 g = np.exp(-(x**2) / (2 * sigma**2))
 g /= g.sum()                                 # exact on f = 1
-if order == 0:
-    return g
-if order == 1:
-    k = g * (x / sigma**2)
-    return k / (k * x).sum()                 # exact on f = x
 k = g * ((x**2 - sigma**2) / sigma**4)
 k = k - k.sum() * g                          # no response to a constant
+sum_after_k0 = float(k.sum())
 k[len(k) // 2] -= k.sum()                    # ... and again, exactly (§4.1)
-return k / ((k * x**2).sum() / 2)
+sum_after_centre = float(k.sum())
+k = k / ((k * x**2).sum() / 2)               # exact on f = x**2 / 2
+pd.DataFrame(
+    [
+        {"stage": "after k0 subtract", "sum(k)": sum_after_k0},
+        {"stage": "after centre rebuild", "sum(k)": sum_after_centre},
+        {"stage": "after second-moment scale", "sum(k)": float(k.sum())},
+    ]
+)
 ```
 
 ```{code-cell} ipython3

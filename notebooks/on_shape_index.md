@@ -9,8 +9,9 @@ kernelspec:
   language: python
 ---
 
-:::{assisted-by}
-claude-code:claude-opus-5
+:::{changelog}
+2026-11-21 | cursor:composer | Replace assisted-by with changelog
+2026-11-16 | claude-code:claude-opus-5 | Create workbook
 :::
 
 `shape_index` built its Hessian with finite differences up to scikit-image 0.26.
