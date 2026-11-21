@@ -23,7 +23,7 @@ measures what the multiscale normalisation does to **detection** and to
 Coordinates are array order. Bright ridges use `black_ridges=False`. The `alpha`
 sign is settled in `meijering_alpha.md`; this notebook uses the paper value
 `alpha = -1/3` unless a cell says otherwise. The paper is
-Meijering *et al.* [@meijering_design_2004];
+Meijering *et al.* [@meijering2004neurite_tracing];
 the authors' implementation is NeuronJ.
 
 ## 1. Setup

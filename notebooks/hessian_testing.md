@@ -1,15 +1,11 @@
 ---
-title: 'Testing the one-pass Hessian'
-date: 2026-09-17
-options:
-  updated: 2026-11-14
 jupytext:
   formats: ipynb,md:myst
   text_representation:
     extension: .md
     format_name: myst
     format_version: 0.13
-    jupytext_version: 1.19.5
+    jupytext_version: 1.19.6
 kernelspec:
   name: python3
   display_name: Python 3 (ipykernel)
@@ -148,8 +144,31 @@ def taps(sigma, order, truncate=8):
     k = k - k.sum() * g                          # no response to a constant
     k[len(k) // 2] -= k.sum()                    # ... and again, exactly (§4.1)
     return k / ((k * x**2).sum() / 2)            # exact on f = x**2 / 2
+```
 
+Let's consider the taps here.  Notice the double correction for the sum=0 condition for `order=2`.  Consider first:
 
+```{code-cell} ipython3
+sigma = 0.25
+order = 2
+trancate = 8
+
+radius = int(truncate * sigma + 0.5)
+x = np.arange(-radius, radius + 1, dtype=float)
+g = np.exp(-(x**2) / (2 * sigma**2))
+g /= g.sum()                                 # exact on f = 1
+if order == 0:
+    return g
+if order == 1:
+    k = g * (x / sigma**2)
+    return k / (k * x).sum()                 # exact on f = x
+k = g * ((x**2 - sigma**2) / sigma**4)
+k = k - k.sum() * g                          # no response to a constant
+k[len(k) // 2] -= k.sum()                    # ... and again, exactly (§4.1)
+return k / ((k * x**2).sum() / 2)
+```
+
+```{code-cell} ipython3
 def one_pass(image, sigma, mode="nearest", cval=0, truncate=8, kernel=taps):
     """scikit-image >= 0.27: one pass per element, with the corrected kernels."""
     image = np.asarray(image, dtype=float)
@@ -195,8 +214,6 @@ def one_pass_shortcut(image, sigma, mode="nearest", cval=0, **kwargs):
 
 SCHEMES = METHODS + (("one-pass + short circuit", one_pass_shortcut),)
 ```
-
-+++
 
 ### 1.1 Which scheme is installed
 
@@ -562,8 +579,6 @@ show_table(pd.DataFrame(
     index="image")
 ```
 
-+++
-
 ### 4.3 Why the repair went into the kernel's caller and not the kernel
 
 Repairing the kernel's sum again, after the correction, converges at σ = 0.5
@@ -635,8 +650,6 @@ The floor zeroes the nudged image and leaves the photograph alone. It is a fix
 for a fault that every release has carried, so it is not a cost of the kernel
 change and does not belong in the same pull request. `on_meijering.md` and
 `on_frangi.md` are where it goes.
-
-+++
 
 +++
 

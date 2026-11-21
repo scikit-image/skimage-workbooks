@@ -13,10 +13,16 @@ SHELL := bash
 
 PYTHON ?= python
 MYST ?= myst
+GH ?= gh
 FIXTURES_DIR = notebooks/bresenham_nd_fixtures
 ZINGL_BIN = $(FIXTURES_DIR)/zingl_line3d
 
-.PHONY: help html preview book clean rm-ipynb kernel github-pages
+# Shared Zotero export; private repo, so this target needs a logged-in $(GH).
+SKIMAGE_REFS_REPO ?= matthew-brett/skimage-refs
+SKIMAGE_REFS_REF ?= main
+LIBRARY_BIB = library.bib
+
+.PHONY: help html preview book clean rm-ipynb kernel github-pages update-library-bib
 
 help:
 	@echo "make html            build the site, warnings as errors"
@@ -26,6 +32,7 @@ help:
 	@echo "make kernel          register the python3 kernelspec against \$$(PYTHON)"
 	@echo "make clean           remove _build and the paired .ipynb files"
 	@echo "make environment.yml regenerate the conda environment file"
+	@echo "make update-library-bib  refresh $(LIBRARY_BIB) from $(SKIMAGE_REFS_REPO)@$(SKIMAGE_REFS_REF)"
 
 # Registers the "python3" kernelspec the notebooks ask for, pointing at
 # $(PYTHON); installing ipykernel does not register it on its own.
@@ -35,6 +42,16 @@ kernel:
 # Kept in sync with build_requirements.txt by a pre-commit hook.
 environment.yml: build_requirements.txt
 	@$(PYTHON) make_environment_yml.py $< -o $@
+
+# Pull the Zotero-synced bibliography from skimage-refs on GitHub. Overwrites
+# $(LIBRARY_BIB) in place; misc.bib stays local. Needs `gh auth login` for the
+# private repo.
+update-library-bib:
+	$(GH) api "repos/$(SKIMAGE_REFS_REPO)/contents/$(LIBRARY_BIB)?ref=$(SKIMAGE_REFS_REF)" \
+		-H "Accept: application/vnd.github.raw" \
+		> $(LIBRARY_BIB).tmp
+	@mv $(LIBRARY_BIB).tmp $(LIBRARY_BIB)
+	@echo "updated $(LIBRARY_BIB) from $(SKIMAGE_REFS_REPO)@$(SKIMAGE_REFS_REF)"
 
 # The Bresenham N-D fixtures need a dedicated env and build; regenerate them
 # by hand, per $(FIXTURES_DIR)/README.md.
