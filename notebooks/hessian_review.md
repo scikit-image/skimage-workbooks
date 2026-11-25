@@ -12,6 +12,8 @@ kernelspec:
   language: python
 ---
 
+# Hessian review
+
 `skimage.feature.hessian_matrix` computes second derivatives of an image at a
 chosen scale. Four filters depend on it — `frangi`, `sato`, `meijering` and
 `hessian` — and it has been through three implementations in as many years.
