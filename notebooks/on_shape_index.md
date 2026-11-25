@@ -14,7 +14,7 @@ kernelspec:
 ---
 
 :::{changelog}
-2026-11-25 | claude-code:claude-opus-5-5 | Add the algorithm in 1-D and its extension to 2-D; split the blob by shape, not by storage; add figures of the algorithm; audit claims, fix cell headings, add tutorial links
+2026-11-25 | claude-code:claude-opus-5-5 | Add the algorithm in 1-D and its extension to 2-D; add an RMS test of the whole Hessian; split the blob by shape, not by storage; add figures of the algorithm; audit claims, fix cell headings, add tutorial links
 2026-11-21 | cursor:composer | Replace assisted-by with changelog
 2026-11-17 | claude-code:claude-opus-5-5 | Restrict the blob comparison to the blob; add umbilic fix, far-field proof and published-formula checks; check literature against full texts
 2026-11-17 | claude-code:claude-fable-5-1 | Add literature search section
@@ -1281,6 +1281,133 @@ show_table(pd.DataFrame(
      for s in (0.3, 0.5, 0.8, 1.0, 2.0)]), index="sigma")
 ```
 
+### 7.3 An RMS test of the whole Hessian
+
+The worst-element error above depends on one element at one pixel. A test of
+overall quality should use the whole matrix at every pixel, should not change
+when the image axes rotate, and should not need the floor of §7.1. The
+relative root mean square (RMS) error of the matrix meets all three:
+
+$$
+E = \sqrt{\frac{\sum_{\mathbf{x}} \lVert \hat H(\mathbf{x}) - H(\mathbf{x}) \rVert_F^2}
+               {\sum_{\mathbf{x}} \lVert H(\mathbf{x}) \rVert_F^2}},
+\qquad
+\lVert H \rVert_F^2 = H_{ii}^2 + 2 H_{ij}^2 + H_{jj}^2 = \lambda_1^2 + \lambda_2^2.
+$$
+
+$\hat H$ is the computed Hessian, $H$ the exact one, and the sums are over the
+interior pixels. $\lVert \cdot \rVert_F$ is the
+[Frobenius norm](https://en.wikipedia.org/wiki/Matrix_norm#Frobenius_norm).
+$H_{ij}$ counts twice, because it is in the matrix twice. A rotation $R$ of the
+image axes changes each matrix to $R H R^T$, which has the same eigenvalues, so
+the norm does not change. $\lVert H \rVert_F^2$ is $2c^2$, where $c$ is the
+curvedness of §4, so each pixel counts in proportion to its curvature. If every
+element has the same gain error $1 + \epsilon$, then $E = |\epsilon|$. So $E$
+reads as a fractional error.
+
+```{code-cell} ipython3
+FROBENIUS_WEIGHTS = (1, 2, 1)          # H_ii, H_ij, H_jj: H_ij is in the matrix twice
+
+
+def hessian_rms(H, H_true, mask):
+    """Relative RMS error of the whole Hessian over `mask`, by the Frobenius norm."""
+    err = sum(w * (a - b)**2 for w, a, b in zip(FROBENIUS_WEIGHTS, H, H_true))
+    ref = sum(w * b**2 for w, b in zip(FROBENIUS_WEIGHTS, H_true))
+    return np.sqrt(err[mask].sum() / ref[mask].sum())
+
+
+def rotate_hessian(H, angle):
+    """R H R^T at every pixel, for a rotation of the axes by `angle`."""
+    co, si = np.cos(angle), np.sin(angle)
+    hii, hij, hjj = H
+    return [co*co*hii - 2*co*si*hij + si*si*hjj,
+            co*si*(hii - hjj) + (co*co - si*si)*hij,
+            si*si*hii + 2*co*si*hij + co*co*hjj]
+```
+
+Three checks of the test itself, on the blob at `sigma` 1, with the
+finite-difference Hessian as $\hat H$:
+
+```{code-cell} ipython3
+image, H_true = blob_truth(BLOB_SIZE, BLOB_WIDTH, 1.0)
+blob, far = zones(BLOB_SIZE, BLOB_WIDTH, 1.0)
+inner = blob | far
+H_fd = fd_hessian(image, 1.0)
+show_table(pd.DataFrame([
+    {"check": "exact Hessian against itself, want 0",
+     "E": f"{hessian_rms(H_true, H_true, inner):.1e}"},
+    {"check": "exact Hessian times 1.01, want 0.01",
+     "E": f"{hessian_rms([1.01 * h for h in H_true], H_true, inner):.6f}"},
+    {"check": "FD Hessian",
+     "E": f"{hessian_rms(H_fd, H_true, inner):.6f}"},
+    {"check": "FD and exact, both rotated by 35 degrees, want the line above",
+     "E": f"{hessian_rms(rotate_hessian(H_fd, np.deg2rad(35)), rotate_hessian(H_true, np.deg2rad(35)), inner):.6f}"},
+]), index="check")
+```
+
+On the blob, for each route, over the whole interior and over the blob zone of
+§7.1 only:
+
+```{code-cell} ipython3
+RMS_BLOB = {}
+
+
+def rms_blob_row(sigma):
+    """E for each route on the blob, over the interior and over the blob zone."""
+    image, H_true = blob_truth(BLOB_SIZE, BLOB_WIDTH, sigma)
+    blob, far = zones(BLOB_SIZE, BLOB_WIDTH, sigma)
+    row = {"sigma": sigma}
+    for name, route in ROUTES:
+        H = route(image, sigma)
+        whole, zone = hessian_rms(H, H_true, blob | far), hessian_rms(H, H_true, blob)
+        RMS_BLOB[sigma, SHORT[name]] = whole
+        row[f"E, {SHORT[name]}"] = f"{whole:.2e}"
+        row[f"{SHORT[name]}, blob zone / interior"] = f"{zone / whole:.4f}"
+    return row
+
+
+show_table(pd.DataFrame([rms_blob_row(s) for s in (0.3, 0.5, 1.0, 2.0, 4.0)]),
+           index="sigma")
+```
+
+The finite-difference Hessian is about 2% out at every `sigma` from 0.3 to 2,
+and 1.7% at 4. The Gaussian-derivative Hessian is 0.6% out at `sigma` 0.3,
+0.3% at 0.5, $10^{-6}$ at 1, and near $10^{-13}$ from 2. The blob zone and the whole
+interior give the same $E$ to within 0.4%, because the far field has little
+curvature, and $E$ weights each pixel by its curvature. So $E$ needs no floor.
+The mean error in $s$ of §7.2 weights each pixel equally, and so it sees the
+far field, where the Hessian is close to rank one.
+
+A smooth blob has few high frequencies (§10). The stripes of §2 have narrow
+bumps, and an angle puts curvature into $H_{ij}$. The image is the raw 1-D
+profile laid down at each angle; the exact Hessian is that of its smoothing:
+
+```{code-cell} ipython3
+STRIPE_GRID = np.indices((161, 161), dtype=float) - 80
+
+
+def rms_stripes_row(degrees, sigma, routes=ROUTES):
+    """E for each route on the stripes of §2, at one angle and one scale."""
+    image, _ = stripes_truth(STRIPE_GRID, np.deg2rad(degrees), 0)
+    _, H_true = stripes_truth(STRIPE_GRID, np.deg2rad(degrees), sigma)
+    mask = np.zeros(image.shape, bool)
+    mask[interior(sigma)] = True
+    return {"angle (degrees)": degrees, "sigma": sigma,
+            **{f"E, {SHORT.get(n, n)}": f"{hessian_rms(r(image, sigma), H_true, mask):.2e}"
+               for n, r in routes}}
+
+
+show_table(pd.DataFrame([rms_stripes_row(d, s) for d in (0, 35) for s in (0.5, 1.0, 2.0)]),
+           index="angle (degrees)")
+```
+
+On the stripes the finite-difference Hessian is 11% to 18% out at `sigma` 0.5
+and 1, against about 2% on the blob. It is 8% to 13% out at `sigma` 2, where
+the Gaussian-derivative Hessian is exact to $10^{-13}$. The finite-difference
+error changes with the angle, from 18% at 0 degrees to 11% at 35 degrees at
+`sigma` 0.5. $E$ does not depend on the angle of the axes, so that change is in
+the route.
+
 ## 8. Why finite differences win in the far field
 
 Far from its centre, the blob is close to an exponential. About a point
@@ -1499,6 +1626,28 @@ def mixed_row(sigma):
 
 show_table(pd.DataFrame([mixed_row(s) for s in (0.3, 0.5, 0.8, 1.0)]), index="sigma")
 ```
+
+The RMS test of §7.3 gives the same picture for the whole Hessian. On the
+stripes at 35 degrees, $H_{ij}$ carries part of the curvature:
+
+```{code-cell} ipython3
+THIRD_ROUTES = (("GD", gd_hessian), ("GD, third", gd_third))
+rows = []
+for sigma in (0.3, 0.5, 1.0):
+    image, H_true = blob_truth(BLOB_SIZE, BLOB_WIDTH, sigma)
+    blob, far = zones(BLOB_SIZE, BLOB_WIDTH, sigma)
+    stripes = rms_stripes_row(35, sigma, THIRD_ROUTES)
+    rows.append({"sigma": sigma,
+                 **{f"blob, E, {n}": f"{hessian_rms(r(image, sigma), H_true, blob | far):.2e}"
+                    for n, r in THIRD_ROUTES},
+                 **{f"stripes 35 degrees, {k}": v for k, v in stripes.items()
+                    if k.startswith("E")}})
+show_table(pd.DataFrame(rows), index="sigma")
+```
+
+At `sigma` 0.3 the third moment cuts $E$ by a factor of about 2.6 on the blob
+and 6 on the stripes. At 0.5 the factors are about 1.4 and 1.9. At 1 the change
+is below 2%.
 
 The third moment improves the mixed element by a factor of about 50 at `sigma`
 0.3 and 0.5, and the shape index inside the blob by about 2. From `sigma` 0.8
@@ -2144,6 +2293,7 @@ curvedness.
 | which is closer to a closed form, inside the blob | Gaussian derivatives at every `sigma` tested, from 0.3 to 4; also at every blob width from 2 to 16, tested at `sigma` 0.3 and 0.5 (§7) |
 | where finite differences are closer | in the far field, where the blob's Hessian is close to rank one (below $10^{-3}$ of the peak), at `sigma` 0.3 and 0.5 (§7) |
 | why | the far field is close to an exponential, and finite differences give the exact shape index of any exponential (§8) |
+| overall Hessian error, relative RMS by the Frobenius norm | FD about 2% on the blob at every `sigma` from 0.3 to 4, 8% to 18% on the stripes; GD 0.6% at `sigma` 0.3, $10^{-6}$ at 1, $10^{-13}$ from 2; needs no floor (§7.3) |
 | where the finite-difference error comes from inside the blob | mostly the diagonal elements, from the doubled central difference (§8) |
 | what the formula does at an umbilic | where the eigenvalues tie exactly it gives the wrong end of the scale, in the library docstring example too (§5) |
 | the fix for the umbilic | $s = -(2/\pi)\,\operatorname{atan2}(\lambda_1 + \lambda_2, \lambda_1 - \lambda_2)$, NaN only at the planar point; no change on the photograph (§5) |
