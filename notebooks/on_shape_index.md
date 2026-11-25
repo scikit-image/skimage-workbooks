@@ -14,7 +14,7 @@ kernelspec:
 ---
 
 :::{changelog}
-2026-11-25 | claude-code:claude-opus-5-5 | Add the algorithm in 1-D and its extension to 2-D; add an RMS test of the whole Hessian; split the blob by shape, not by storage; add figures of the algorithm; audit claims, fix cell headings, add tutorial links
+2026-11-25 | claude-code:claude-opus-5-5 | Add the algorithm in 1-D and its extension to 2-D; add an RMS test of the whole Hessian; split the blob by shape, not by storage; add figures of the algorithm; audit claims, fix cell headings, add tutorial links; add a figure of the atan2 fix
 2026-11-21 | cursor:composer | Replace assisted-by with changelog
 2026-11-17 | claude-code:claude-opus-5-5 | Restrict the blob comparison to the blob; add umbilic fix, far-field proof and published-formula checks; check literature against full texts
 2026-11-17 | claude-code:claude-fable-5-1 | Add literature search section
@@ -939,8 +939,89 @@ show_table(pd.DataFrame([r for s in (0.5, 1.0, 2.0, 4.0)
                          for r in centre_rows(s, s_from)]), index="sigma")
 ```
 
-Every centre value is now $+1$. Away from ties the two formulas differ only by
-rounding:
+Every centre value is now $+1$.
+
+The left panel shows the library formula as a function of its denominator,
+$d = \lambda_2 - \lambda_1$, for a cap and a cup with a sum of $\mp 1$. Only
+$d \leq 0$ is reached. The one-argument arctangent sees only the quotient, so it
+jumps from $\pm 1$ to $\mp 1$ at $d = 0$. A tie gives $d = +0$, which takes the
+value on the unreached side of the jump. The right panel shows the two-argument
+form. It takes the difference and the sum as the coordinates of a point, and
+returns the angle $\theta$ of that point. The sign of each coordinate selects
+the quadrant, so a tie, on the vertical axis, gets $\theta = \mp\pi/2$ by the
+sign of the sum alone. The markers are values of `s_library` and `s_from` on
+Hessians with an exact tie:
+
+```{code-cell} ipython3
+# The tie, through each formula.  Ties are built as real Hessians.
+def tie(total):
+    """Hessian elements with l1 = l2 = total / 2, at one pixel."""
+    return [np.array([[total / 2]]), np.array([[0.0]]), np.array([[total / 2]])]
+
+
+TIE_SUMS = {-1.0: ("cap", C_TWO), 1.0: ("cup", C_ONE)}
+d_left, d_right = np.linspace(-2, -1e-3, 400), np.linspace(1e-3, 2, 400)
+
+fig, (ax_d, ax_v) = plt.subplots(1, 2, figsize=(8.4, 3.6), layout="constrained")
+
+# Left: the library formula against its denominator d = l2 - l1.
+ax_d.axvspan(0, 2.1, color=RULE, alpha=0.5, linewidth=0)
+ax_d.text(1.05, -0.2, "not reached:\n" r"$\lambda_2 > \lambda_1$", ha="center",
+          color=MUTED, fontsize=7.5)
+for total, (name, colour) in TIE_SUMS.items():
+    for d, style in ((d_left, "solid"), (d_right, "dotted")):
+        ax_d.plot(d, (2 / np.pi) * np.arctan(total / d), color=colour,
+                  linestyle=style, linewidth=1.8)
+    wrong, right = s_library(tie(total))[0, 0], s_from(tie(total))[0, 0]
+    ax_d.plot(0, wrong, "o", color=colour, markersize=7)
+    ax_d.plot(0, right, "o", markerfacecolor="white", markeredgecolor=colour,
+              markeredgewidth=1.8, markersize=9)
+    ax_d.annotate(rf"{name}, $\lambda_1 + \lambda_2 = {total:+.0f}$",
+                  (-1.2, (2 / np.pi) * np.arctan(total / -1.2)),
+                  (0, 9 if total < 0 else -14), textcoords="offset points",
+                  ha="center", color=INK, fontsize=7.5)
+ax_d.plot([], [], "o", color=MUTED, label="library at a tie, d = +0")
+ax_d.plot([], [], "o", markerfacecolor="white", markeredgecolor=MUTED,
+          markeredgewidth=1.8, label="atan2 at a tie")
+ax_d.axhline(0, color=RULE, linewidth=0.8, zorder=0)
+ax_d.set_xlim(-2.1, 2.1); ax_d.set_ylim(-1.15, 1.15)
+ax_d.legend(frameon=False, fontsize=7, labelcolor=MUTED, loc="center left")
+recede(ax_d, r"library: $s = \frac{2}{\pi}\arctan\frac{\lambda_1 + \lambda_2}{d}$")
+ax_d.set_xlabel(r"$d = \lambda_2 - \lambda_1$", color=MUTED)
+ax_d.set_ylabel("$s$", color=MUTED)
+
+# Right: atan2 takes the sum and the difference as the coordinates of a point.
+xg, yg = np.meshgrid(np.linspace(-1.2, 1.2, 401), np.linspace(-1.2, 1.2, 401))
+s_plane = -(2 / np.pi) * np.arctan2(yg, xg)
+s_plane[(xg < 0) | (xg**2 + yg**2 > 1)] = np.nan
+ax_v.imshow(s_plane, extent=(-1.2, 1.2, -1.2, 1.2), origin="lower", cmap=DIV,
+            norm=TwoSlopeNorm(0, -1, 1), alpha=0.55)
+ax_v.axvline(0, color=INK, linewidth=1.2)
+ax_v.axhline(0, color=RULE, linewidth=0.8, zorder=0)
+angle = np.deg2rad(-35)
+ax_v.annotate("", (np.cos(angle), np.sin(angle)), (0, 0),
+              arrowprops=dict(arrowstyle="->", color=INK, linewidth=1.2))
+arc = np.linspace(angle, 0, 30)
+ax_v.plot(0.35 * np.cos(arc), 0.35 * np.sin(arc), color=INK, linewidth=0.8)
+ax_v.text(0.42, -0.17, r"$\theta$", color=INK, fontsize=9)
+for total, (name, colour) in TIE_SUMS.items():
+    value = s_from(tie(total))[0, 0]
+    ax_v.plot(0, total, "o", markerfacecolor="white", markeredgecolor=colour,
+              markeredgewidth=1.8, markersize=9)
+    ax_v.annotate(f"tie, {name}: s = {value:+.0f}", (0, total),
+                  (-8, 0), textcoords="offset points", ha="right", va="center",
+                  color=INK, fontsize=7.5)
+ax_v.plot(0, 0, "o", color=INK, markersize=4)
+ax_v.annotate("planar point: NaN", (0, 0), (-8, 6), textcoords="offset points",
+              ha="right", color=INK, fontsize=7.5)
+ax_v.text(0.55, 0.85, r"$s = -\frac{2}{\pi}\,\theta$", color=INK, fontsize=9)
+ax_v.set_xlim(-1.2, 1.2); ax_v.set_ylim(-1.2, 1.2); ax_v.set_aspect("equal")
+recede(ax_v, r"atan2: $\theta$ is the angle of the point")
+ax_v.set_xlabel(r"$\lambda_1 - \lambda_2 \geq 0$", color=MUTED)
+ax_v.set_ylabel(r"$\lambda_1 + \lambda_2$", color=MUTED)
+```
+
+Away from ties the two formulas differ only by rounding:
 
 ```{code-cell} ipython3
 def fix_cost(route, sigma):
