@@ -13,6 +13,7 @@ https://doi.org/10.1137/S0895479891222106 | Fausett & Fulton on Kronecker least 
 :::
 
 :::{changelog}
+2026-11-25 | claude-code:claude-opus-5-5 | Add an RMS test of the whole Hessian, split into gain and shape; describe the ridge fit; match `gaussian_sum.py` to the test file
 2026-11-25 | cursor:composer | Expand §3 on basis separability (isotropic factoring + product grid) vs dense amplitudes
 2026-11-25 | cursor:composer | Note that `test_hessian_schemes.py` asserts absolute Mobahi accuracy, not scheme comparisons
 2026-11-25 | cursor:composer | Create workbook; Mobahi smoothing identity; two-step lstsq amplitude fit (Fausett & Fulton)
@@ -38,6 +39,7 @@ import matplotlib.pyplot as plt
 
 import skimage as ski
 from nbhelper import show_table
+from matplotlib.colors import LinearSegmentedColormap
 
 import gaussian_sum as gs
 ```
@@ -178,16 +180,17 @@ picture can need a dense $A$; the solver only needs the dictionary to factor.
 Vectorising the model gives
 $(A_c \otimes A_r)\,\mathrm{vec}(A) \approx \mathrm{vec}(Y)$, a
 Kronecker-structured least-squares problem [@fausett1994large_least]. Rather
-than form the Kronecker product, fit in two ordinary steps with
-`np.linalg.lstsq`:
+than form the Kronecker product, fit in two steps:
 
 1. $A_r M \approx Y$ for the mid-factor $M$,
 2. $A_c A^\top \approx M^\top$ for the amplitudes $A$.
 
-That is the same $A$ the big Kronecker solve would return (when the truncated
-SVDs agree), at the cost of two small dense problems instead of one huge one.
-Singular values below `rcond` times the largest are dropped (NumPy's default
-truncated-SVD regularisation).
+Each step is a ridge ([Tikhonov](https://en.wikipedia.org/wiki/Ridge_regression))
+least-squares solve, $\min_X \lVert B X - R \rVert^2 + \lambda \lVert X
+\rVert^2$, with $\lambda$ equal to `RIDGE` times the largest squared singular
+value of $B$. The ridge shrinks the amplitudes and the cancellation between
+them, at some cost in fit accuracy. `gs.ridge_solve` solves it as an ordinary
+least-squares problem on $B$ stacked over $\sqrt{\lambda} I$.
 
 ```{code-cell} ipython3
 PHOTOGRAPHS = {
@@ -244,7 +247,270 @@ runs the filter on that render, and compares the result to
 `gs.hessian(levels, shape, sigma)`. The photograph only chooses the
 amplitudes.
 
-## 5. What this standard is for
+(sec-rms)=
+## 5. An RMS test of the whole Hessian
+
+`test_hessian_schemes.py` measures the largest gap between one Hessian element
+and its exact value, divided by the peak exact element. That number comes from
+one element at one pixel. An RMS test uses the whole matrix at every pixel.
+
+Let $\hat H(\mathbf{x})$ be the computed Hessian at pixel $\mathbf{x}$ and
+$H(\mathbf{x})$ the exact one. Sum the
+[Frobenius inner product](https://en.wikipedia.org/wiki/Frobenius_inner_product)
+over the interior pixels $I$, which are the pixels that an $8\sigma$ kernel
+can reach without passing the image edge:
+
+$$
+\langle A, B \rangle = \sum_{\mathbf{x} \in I}
+  \bigl(A_{rr} B_{rr} + 2 A_{rc} B_{rc} + A_{cc} B_{cc}\bigr),
+\qquad \lVert A \rVert^2 = \langle A, A \rangle,
+\qquad E = \frac{\lVert \hat H - H \rVert}{\lVert H \rVert}.
+$$
+
+$H_{rc}$ counts twice, because it is in the matrix twice. Then the term at one
+pixel is $\lambda_1^2 + \lambda_2^2$, the sum of the squared eigenvalues, which
+does not change when the image axes rotate. Each pixel counts in proportion to
+its curvature, so flat regions, where a relative error at one pixel would
+divide by almost zero, count for little.
+
+$E$ splits into two parts. Let $g = \langle \hat H, H \rangle / \lVert H
+\rVert^2$, the one gain that best scales the exact Hessian onto the computed
+one, and $S = \lVert \hat H - gH \rVert / \lVert H \rVert$. The residual
+$\hat H - gH$ is orthogonal to $H$, and $\hat H - H = (g - 1) H + (\hat H - gH)$,
+so
+
+$$
+E^2 = (g - 1)^2 + S^2.
+$$
+
+A gain error multiplies every eigenvalue by the same factor. It leaves the
+eigenvectors and the ratio of the eigenvalues alone, so a filter that uses only
+that ratio, such as the shape index, does not see it. $S$ is the error that no
+one gain explains: errors in the eigenvalue ratios and the principal directions,
+and a gain that changes over the image.
+
+```{code-cell} ipython3
+import warnings
+from itertools import combinations_with_replacement
+
+import scipy.ndimage as ndi
+from skimage.feature import hessian_matrix
+
+FROBENIUS_WEIGHTS = (1, 2, 1)          # H_rr, H_rc, H_cc: H_rc is in the matrix twice
+
+
+def interior(sigma):
+    """Pixels that an 8-sigma kernel reaches without passing the image edge."""
+    reach = int(8 * sigma + 0.5) + 1
+    return (slice(reach, -reach),) * 2
+
+
+def frobenius(A, B, inner):
+    """<A, B>: the Frobenius inner product of two Hessians, summed over `inner`."""
+    return sum(w * np.sum(a[inner] * b[inner]) for w, a, b in zip(FROBENIUS_WEIGHTS, A, B))
+
+
+def rms_error(got, truth, sigma):
+    """Relative RMS error E of the whole Hessian, and its split into gain and shape."""
+    inner = interior(sigma)
+    norm2 = frobenius(truth, truth, inner)
+    gain = frobenius(got, truth, inner) / norm2
+    diff = [a - b for a, b in zip(got, truth)]
+    rest = [a - gain * b for a, b in zip(got, truth)]
+    return {"E": np.sqrt(frobenius(diff, diff, inner) / norm2),
+            "g - 1": gain - 1,
+            "S": np.sqrt(frobenius(rest, rest, inner) / norm2)}
+
+
+def max_error(got, truth, sigma):
+    """The measure of `test_hessian_schemes.py`: largest gap / peak exact element."""
+    inner = interior(sigma)
+    peak = max(np.abs(t[inner]).max() for t in truth)
+    return max(np.abs(a[inner] - b[inner]).max() for a, b in zip(got, truth)) / peak
+```
+
+Three schemes. Two are the installed `hessian_matrix`, with and without
+`use_gaussian_derivatives`. The third is the moment-corrected Gaussian
+derivative of the `hessian-refactor` branch, which `test_hessian_schemes.py`
+tests. `taps` is a transcription of `_gaussian_derivative_kernel` on that
+branch. The two agree to the last bit for `sigma` from 0.1 to 4 and all three
+orders; that check ran in the branch environment, outside this notebook.
+
+```{code-cell} ipython3
+def taps(sigma, order, truncate=8):
+    """1-D Gaussian derivative kernel, with its discrete moments restored."""
+    radius = int(truncate * sigma + 0.5)
+    x = np.arange(-radius, radius + 1, dtype=float)
+    smoothing = np.exp(-(x**2) / (2 * sigma**2))
+    smoothing /= smoothing.sum()
+    if order == 0:
+        return smoothing
+    if order == 1:
+        kernel = smoothing * (x / sigma**2)
+        return kernel / (kernel * x).sum()
+    kernel = smoothing * ((x**2 - sigma**2) / sigma**4)
+    kernel = kernel - kernel.sum() * smoothing
+    centre = len(kernel) // 2
+    kernel[centre] = -(kernel[:centre].sum() + kernel[centre + 1:].sum())
+    kernel /= (kernel * x**2).sum() / 2
+    kernel[centre] = -(kernel[:centre].sum() + kernel[centre + 1:].sum())
+    return kernel
+
+
+def corrected(image, sigma):
+    """Moment-corrected Gaussian derivatives: one separable pass per element."""
+    elements = []
+    for ax0, ax1 in combinations_with_replacement(range(2), 2):
+        orders = [0, 0]
+        orders[ax0] += 1
+        orders[ax1] += 1
+        result = image
+        for axis, order in enumerate(orders):
+            result = ndi.correlate1d(result, taps(sigma, order), axis=axis, mode="nearest")
+        elements.append(result)
+    return elements
+
+
+def installed(use_gaussian_derivatives):
+    """The installed `hessian_matrix`, with or without Gaussian derivatives."""
+    def scheme(image, sigma):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", FutureWarning)
+            return hessian_matrix(image, sigma=sigma, mode="nearest",
+                                  use_gaussian_derivatives=use_gaussian_derivatives)
+    return scheme
+
+
+SCHEMES = {"finite differences (installed)": installed(False),
+           "Gaussian derivatives (installed)": installed(True),
+           "moment-corrected (branch)": corrected}
+```
+
+Checks of the test itself, on `camera` at `sigma` 1, with the moment-corrected
+Hessian as $\hat H$:
+
+```{code-cell} ipython3
+def rotate_hessian(H, angle):
+    """R H R^T at every pixel, for a rotation of the axes by `angle`."""
+    co, si = np.cos(angle), np.sin(angle)
+    hrr, hrc, hcc = H
+    return [co * co * hrr - 2 * co * si * hrc + si * si * hcc,
+            co * si * (hrr - hcc) + (co * co - si * si) * hrc,
+            si * si * hrr + 2 * co * si * hrc + co * co * hcc]
+
+
+levels, shape, _ = FITS["camera"]
+camera_sum = gs.render(levels, shape)
+truth = gs.hessian(levels, shape, 1.0)
+got = corrected(camera_sum, 1.0)
+turned = np.deg2rad(35)
+checks = {
+    "exact against itself": rms_error(truth, truth, 1.0),
+    "exact times 1.01": rms_error([1.01 * h for h in truth], truth, 1.0),
+    "moment-corrected": rms_error(got, truth, 1.0),
+    "moment-corrected, axes rotated 35 degrees":
+        rms_error(rotate_hessian(got, turned), rotate_hessian(truth, turned), 1.0),
+}
+show_table(pd.DataFrame(
+    [{"Hessian": name, **{k: f"{v:+.6e}" for k, v in r.items()},
+      "E**2 - (g-1)**2 - S**2": f"{r['E']**2 - r['g - 1']**2 - r['S']**2:+.1e}"}
+     for name, r in checks.items()]), index="Hessian")
+```
+
+The exact Hessian scores 0. A gain of 1.01 gives $g - 1 = 0.01$ and $S = 0$.
+Rotating both Hessians leaves $E$, $g$ and $S$ unchanged to rounding, and
+$E^2 = (g - 1)^2 + S^2$ to rounding.
+
+Each scheme on each fitted photograph. The last column is the measure of
+`test_hessian_schemes.py`:
+
+```{code-cell} ipython3
+RMS_SIGMAS = (0.5, 1.0, 2.0, 4.0)
+RMS = {}
+rows = []
+for name, (levels, shape, _) in FITS.items():
+    rendered = gs.render(levels, shape)
+    for sigma in RMS_SIGMAS:
+        truth = gs.hessian(levels, shape, sigma)
+        for scheme, method in SCHEMES.items():
+            got = method(rendered, sigma)
+            RMS[name, sigma, scheme] = r = rms_error(got, truth, sigma)
+            rows.append({"image": name, "sigma": sigma, "scheme": scheme,
+                         "E": f"{r['E']:.2e}", "g - 1": f"{r['g - 1']:+.2e}",
+                         "S": f"{r['S']:.2e}",
+                         "max gap / peak": f"{max_error(got, truth, sigma):.2e}"})
+table = pd.DataFrame(rows)
+show_table(table[table["image"] == "camera"].drop(columns="image"), index="sigma")
+```
+
+```{code-cell} ipython3
+spread = pd.DataFrame(
+    [{"sigma": sigma, "scheme": scheme,
+      **{f"E, {name}": f"{RMS[name, sigma, scheme]['E']:.2e}" for name in FITS}}
+     for sigma in RMS_SIGMAS for scheme in SCHEMES])
+show_table(spread, index="sigma")
+```
+
+$E$ and the max measure rank the schemes in the same order at each `sigma`.
+$E$ changes by less than 20% between the three photographs. The split says what kind of error each
+scheme makes:
+
+- The finite-difference Hessian loses gain: $g - 1$ is about $-0.34$ at
+  `sigma` 0.5, $-0.26$ at 1, $-0.11$ at 2 and $-0.03$ at 4. Its shape error
+  $S$ is 50% to 85% of $|g - 1|$.
+- The installed Gaussian-derivative Hessian loses almost all its gain at
+  `sigma` 0.5, $g - 1 = -0.94$, with $S$ only 0.012. A filter that uses only
+  the eigenvalue ratio would hardly see that error; the max measure, at 0.94,
+  cannot tell it from a shape error. At `sigma` 1 both parts are about 0.01.
+- The moment-corrected Hessian has $g - 1$ about 0.015 and $S$ about 0.08 at
+  `sigma` 0.5. At `sigma` 1 its error is almost all
+  shape: $S$ about $2 \times 10^{-4}$, against $g - 1$ about
+  $7 \times 10^{-5}$. From `sigma` 2 both are rounding.
+
+Where the error lies on the image. $\lVert H \rVert_F$ at each pixel is the
+exact curvature. $\lVert \hat H - H \rVert_F$ is the whole error, and
+$\lVert \hat H - gH \rVert_F$ the part that no one gain explains. Each row
+shares one scale for its two error maps:
+
+```{code-cell} ipython3
+def frobenius_map(H):
+    """||H||_F at each pixel."""
+    return np.sqrt(sum(w * h**2 for w, h in zip(FROBENIUS_WEIGHTS, H)))
+
+
+SEQ = LinearSegmentedColormap.from_list("seq", ["#ffffff", C_ONE, INK])
+MAP_SIGMA, VIEW = 1.0, (slice(60, 220), slice(180, 340))
+levels, shape, _ = FITS["camera"]
+camera_sum = gs.render(levels, shape)
+truth = gs.hessian(levels, shape, MAP_SIGMA)
+
+fig, axes = plt.subplots(2, 4, figsize=(9.6, 5.0), layout="constrained")
+for row, scheme in zip(axes, ("finite differences (installed)", "moment-corrected (branch)")):
+    got = SCHEMES[scheme](camera_sum, MAP_SIGMA)
+    gain = 1 + RMS["camera", MAP_SIGMA, scheme]["g - 1"]
+    whole = frobenius_map([a - b for a, b in zip(got, truth)])[VIEW]
+    rest = frobenius_map([a - gain * b for a, b in zip(got, truth)])[VIEW]
+    bare(row[0], "camera sum").imshow(camera_sum[VIEW], cmap="gray")
+    bare(row[1], r"$\|H\|_F$, exact").imshow(frobenius_map(truth)[VIEW], cmap=SEQ)
+    top = whole.max()
+    bare(row[2], rf"$\|\hat H - H\|_F$, {scheme}").imshow(whole, cmap=SEQ, vmin=0, vmax=top)
+    shown = bare(row[3], rf"$\|\hat H - gH\|_F$, g = {gain:.5f}").imshow(
+        rest, cmap=SEQ, vmin=0, vmax=top)
+    fig.colorbar(shown, ax=row[3], fraction=0.046).outline.set_visible(False)
+    for ax in row:
+        ax.title.set_fontsize(7.5)
+fig.suptitle(rf"camera at $\sigma$ = {MAP_SIGMA:g}", color=MUTED, fontsize=9)
+```
+
+For finite differences the whole error has the pattern of the exact curvature:
+most of it is the lost gain, and removing the best gain leaves a smaller error
+at fine detail. For the moment-corrected Hessian the two error maps are the
+same, because $g$ is 1 to within $10^{-4}$.
+
+`test_hessian_schemes.py` asserts the two parts separately, with the floors
+that this table measures, for the moment-corrected Hessian.
+
+## 6. What this standard is for
 
 Mobahi's identity is exact for the continuous RBF sum. It does not assume a
 band-limited interpolant, so it is a different referee from the DCT continuous
