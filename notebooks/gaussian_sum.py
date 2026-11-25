@@ -4,19 +4,28 @@ The model is Mobahi's isotropic Gaussian radial-basis sum [1]
 
     f(x) = Σ_j a_j exp(−‖x − x_j‖² / (2 δ_j²))
 
-with ``a_j`` the amplitude and ``δ_j`` the width of Gaussian ``j``.
-Coordinates are in pixels, in skimage ``rc`` order: ``r`` down the rows, ``c``
-across the columns, with pixel centres at integers.
+with ``a_j`` the amplitude, ``δ_j`` the width and ``x_j`` the centre of
+Gaussian ``j``. We choose the ``δ_j`` and ``x_j``, then do a least-squares fit
+to find the ``a_j``. Coordinates are in pixels, in skimage ``rc`` order: ``r``
+down the rows, ``c`` across the columns, with pixel centres at integers.
 
 The Gaussians of one width form a *level*: a regular grid of centres whose
-spacing equals the width, reaching one spacing past each image edge.  Levels
-are fitted coarse to fine, each to the residual that the coarser levels leave.
+spacing equals the width, reaching one spacing past each image edge. Levels
+are fitted from coarse (large ``δ``) to fine (small ``δ``), each to the
+residual that the coarser levels leave. On the grid, Mobahi's single index
+``j`` becomes a pair ``(j, k)``: row centre ``r_j`` and column centre ``c_k``.
 Because a level is a grid of separable functions, its least-squares fit splits
 into two 1-D problems, ``A_r @ A @ A_c.T ≈ residual`` [2], each solved by ridge
 (Tikhonov) least squares.
 
+We use ridge least squares because neighbouring Gaussians, spaced ``δ`` apart
+with width ``δ``, overlap heavily. Without a penalty, the fit uses large
+amplitudes that nearly cancel. The ridge keeps the amplitudes small, at a
+small cost in fit accuracy, and lowers the sigma-1 Hessian error of the
+filter.
+
 Smoothing the model by a normalised Gaussian of scale ``σ`` gives the same sum
-with width ``√(δ² + σ²)`` and amplitude ``a (δ / √(δ² + σ²))^n`` [1].  So the
+with width ``√(δ² + σ²)`` and amplitude ``a (δ / √(δ² + σ²))^n`` [1]. So the
 smoothed image and its derivatives have closed forms; `render` and `hessian`
 evaluate them without truncation.
 
@@ -62,7 +71,7 @@ def grid_centres(n, spacing):
 
 def basis(coords, centres, delta, order=0):
     """1-D factors ``exp(−(t − t_j)² / (2 δ²))``, or a derivative."""
-    offset = np.asarray(coords, dtype=float)[:, None] - centres[None, :]
+    offset = coords[:, None] - centres[None, :]
     gaussian = np.exp(-(offset**2) / (2 * delta**2))
     if order == 0:
         return gaussian
@@ -111,18 +120,26 @@ def ridge_solve(X, Y, ridge):
 def fit(image, deltas=DELTAS, ridge=RIDGE):
     """Fit levels coarse to fine. Return the levels and the residual.
 
-    The isotropic Gaussian basis is separable: each grid term factors into a
-    row Gaussian times a column Gaussian, and the rectangular centre grid
-    makes the 2-D dictionary the outer product of those 1-D dictionaries.
-    The model is therefore ``A_r @ A @ A_c.T ≈ residual`` with dense
-    amplitudes ``A`` (Mobahi's ``a_j`` [1]). Solve that Kronecker ridge
-    least-squares problem in two steps (Fausett & Fulton [2]):
-    ``A_r M ≈ residual``, then ``A_c A.T ≈ M.T``. Separability is in the
-    basis, not in ``A``.
+    The Gaussians of one width ``δ`` sit on a grid of spacing ``δ``, reaching
+    one spacing past each edge. Each level is fitted to the residual that the
+    coarser levels leave.
 
-    ``ridge`` is a relative Tikhonov penalty, scaled by the largest squared
-    singular value of each basis. Raising it shrinks the amplitudes and the
-    cancellation between them, at the cost of fit accuracy.
+    An isotropic Gaussian factors into a row Gaussian times a column Gaussian.
+    On a rectangular grid of centres, the 2-D basis is therefore the outer
+    product of two 1-D bases: ``A_r`` (row Gaussians on the image rows) and
+    ``A_c`` (column Gaussians on the image columns). The model at one width is
+
+        residual ≈ A_r @ A @ A_c.T,
+
+    with ``A`` the full matrix of amplitudes ``a_jk``. Vectorised, this is
+    ``(A_c ⊗ A_r) vec(A) ≈ vec(residual)`` [2]. Two 1-D ridge solves fit it
+    without forming the Kronecker product: ``A_r M ≈ residual``, then
+    ``A_c A.T ≈ M.T``. That is a two-step ridge, not one ridge solve on the
+    vectorised model.
+
+    ``ridge`` is a relative Tikhonov penalty (see `ridge_solve`). Raising it
+    shrinks the amplitudes and the cancellation between them, at the cost of
+    fit accuracy.
     """
     residual = np.array(image, dtype=float)
     rows = np.arange(residual.shape[0], dtype=float)
@@ -133,7 +150,6 @@ def fit(image, deltas=DELTAS, ridge=RIDGE):
         col_centres = grid_centres(len(cols), delta)
         row_basis = basis(rows, row_centres, delta)
         col_basis = basis(cols, col_centres, delta)
-        # Two-step separable ridge [2]: rows, then columns.
         row_fit = ridge_solve(row_basis, residual, ridge)
         amplitudes = ridge_solve(col_basis, row_fit.T, ridge).T
         residual = residual - row_basis @ amplitudes @ col_basis.T
