@@ -186,11 +186,14 @@ than form the Kronecker product, fit in two steps:
 2. $A_c A^\top \approx M^\top$ for the amplitudes $A$.
 
 Each step is a ridge ([Tikhonov](https://en.wikipedia.org/wiki/Ridge_regression))
-least-squares solve, $\min_X \lVert B X - R \rVert^2 + \lambda \lVert X
-\rVert^2$, with $\lambda$ equal to `RIDGE` times the largest squared singular
-value of $B$. The ridge shrinks the amplitudes and the cancellation between
-them, at some cost in fit accuracy. `gs.ridge_solve` solves it as an ordinary
-least-squares problem on $B$ stacked over $\sqrt{\lambda} I$.
+least-squares solve. In Wikipedia's notation, with design matrix $X$ ($A_r$
+or $A_c$), response $Y$ and coefficients $\beta$, it minimizes
+$\lVert Y - X\beta \rVert^2 + \lambda \lVert \beta \rVert^2$, with solution
+$\hat\beta_\lambda = (X^\mathsf{T} X + \lambda I)^{-1} X^\mathsf{T} Y$.
+$\lambda$ is `RIDGE` times the largest squared singular value of $X$. The ridge
+shrinks the amplitudes and the cancellation between them, at some cost in fit
+accuracy. `gs.ridge_solve` solves it as ordinary least squares on $X$ stacked
+over $\sqrt{\lambda} I$, with $Y$ stacked over zeros.
 
 ```{code-cell} ipython3
 PHOTOGRAPHS = {

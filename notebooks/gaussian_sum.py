@@ -1,42 +1,52 @@
 """Approximate a greyscale image by a sum of isotropic Gaussians of a few widths.
 
-The model is Mobahi's isotropic Gaussian radial-basis sum
+The model is Mobahi's isotropic Gaussian radial-basis sum [1]
 
-    f(x) = sum_j a_j exp(-||x - x_j||**2 / (2 delta_j**2))
+    f(x) = Σ_j a_j exp(−‖x − x_j‖² / (2 δ_j²))
 
-with ``a_j`` the amplitude and ``delta_j`` the standard deviation of Gaussian
-``j``.  Coordinates are in pixels, in skimage ``rc`` order: ``r`` down the rows,
-``c`` across the columns, with pixel centres at integers.
+with ``a_j`` the amplitude and ``δ_j`` the width of Gaussian ``j``.
+Coordinates are in pixels, in skimage ``rc`` order: ``r`` down the rows, ``c``
+across the columns, with pixel centres at integers.
 
 The Gaussians of one width form a *level*: a regular grid of centres whose
 spacing equals the width, reaching one spacing past each image edge.  Levels
 are fitted coarse to fine, each to the residual that the coarser levels leave.
 Because a level is a grid of separable functions, its least-squares fit splits
-into two 1-D problems, ``A_r @ A @ A_c.T ~ residual``, each solved by ridge
+into two 1-D problems, ``A_r @ A @ A_c.T ≈ residual`` [2], each solved by ridge
 (Tikhonov) least squares.
 
-Smoothing the model by a normalised Gaussian of scale ``sigma`` gives the same
-sum with width ``sqrt(delta**2 + sigma**2)`` and amplitude
-``a * delta**2 / (delta**2 + sigma**2)`` (Mobahi 2016, section 2.2).  So the
+Smoothing the model by a normalised Gaussian of scale ``σ`` gives the same sum
+with width ``√(δ² + σ²)`` and amplitude ``a (δ / √(δ² + σ²))^n`` [1].  So the
 smoothed image and its derivatives have closed forms; `render` and `hessian`
 evaluate them without truncation.
 
-The names and the fit match ``tests/skimage2/feature/test_hessian_metrics.py``
-on the scikit-image ``hessian-refactor`` branch.
+The code matches ``tests/skimage2/feature/test_hessian_metrics.py`` on the
+scikit-image ``hessian-refactor`` branch, with public names: `grid_centres`,
+`basis`, `ridge_solve` and `hessian` there are ``_grid_centres``, ``_basis``,
+``_ridge_solve`` and ``exact_hessian``.
+
+References
+----------
+.. [1] H. Mobahi, "Closed Form for Some Gaussian Convolutions,"
+    arXiv:1602.05610 [math.CA], 2016.
+.. [2] D. W. Fausett and C. T. Fulton, "Large Least Squares Problems Involving
+    Kronecker Products," SIAM J. Matrix Anal. Appl., 15(1):219–227, 1994.
+    https://doi.org/10.1137/S0895479891222106
 """
 
 from dataclasses import dataclass
 
 import numpy as np
+import numpy.linalg as npl
 
-DELTAS = (16.0, 8.0, 4.0, 2.0, 1.5)  # delta, pixels, coarse to fine
+DELTAS = (16.0, 8.0, 4.0, 2.0, 1.5)  # δ, pixels, coarse to fine
 RIDGE = 1e-3  # relative ridge penalty for the separable least-squares fit
 NDIM = 2  # n = dim(x) for images
 
 
 @dataclass
 class Level:
-    """Gaussians of one width delta, on a grid of centres x_j = (r_j, c_j)."""
+    """Gaussians of one width δ, on a grid of centres x_j = (r_j, c_j)."""
 
     delta: float
     row_centres: np.ndarray
@@ -45,13 +55,13 @@ class Level:
 
 
 def grid_centres(n, spacing):
-    """Centres along an axis of length `n`, one spacing past each edge."""
+    """Centres along an axis of length ``n``, one spacing past each edge."""
     count = int(np.ceil((n - 1 + 2 * spacing) / spacing)) + 1
     return -spacing + spacing * np.arange(count)
 
 
 def basis(coords, centres, delta, order=0):
-    """1-D factors exp(-(t - t_j)**2 / (2 delta**2)), or a derivative of them."""
+    """1-D factors ``exp(−(t − t_j)² / (2 δ²))``, or a derivative."""
     offset = np.asarray(coords, dtype=float)[:, None] - centres[None, :]
     gaussian = np.exp(-(offset**2) / (2 * delta**2))
     if order == 0:
@@ -63,21 +73,57 @@ def basis(coords, centres, delta, order=0):
     raise ValueError(f"order must be 0, 1 or 2, not {order}")
 
 
-def ridge_solve(A, rhs, ridge):
-    """Ridge least squares, min ||A X - rhs||**2 + lam ||X||**2, lam = ridge * s0**2.
+def ridge_solve(X, Y, ridge):
+    """Ridge regression of ``Y`` on ``X``, as least squares on augmented data.
 
-    ``s0`` is the largest singular value of `A`.  Solved as an ordinary
-    least-squares problem on `A` augmented with ``sqrt(lam) I``.
+    In the notation of Wikipedia's "Ridge regression", with design matrix
+    ``X``, response ``Y`` (here one column per right-hand side) and
+    coefficients ``β``, the model is ``Y = X β + ε``, and the ridge estimate
+    minimizes
+
+        ‖Y − X β‖² + λ ‖β‖²,
+
+    with solution
+
+        β̂_λ = (Xᵀ X + λ I)⁻¹ Xᵀ Y.
+
+    This is Tikhonov regularization with ``Γ = √λ I``, so it is ordinary least
+    squares on the augmented data
+
+        X_aug = [X; √λ I],    Y_aug = [Y; 0],
+
+    because ``X_augᵀ X_aug = Xᵀ X + λ I`` and ``X_augᵀ Y_aug = Xᵀ Y``.
+    ``npl.lstsq`` computes that solution directly.
+
+    The penalty is ``λ = ridge × s₀²``, where ``s₀`` is the largest singular
+    value of ``X``. ``X_aug`` has singular values ``√(s_i² + λ)``, so it is
+    well conditioned.
+
+    https://en.wikipedia.org/wiki/Ridge_regression
     """
-    lam = ridge * np.linalg.norm(A, 2) ** 2
-    columns = A.shape[1]
-    augmented = np.vstack([A, np.sqrt(lam) * np.eye(columns)])
-    rhs_augmented = np.vstack([rhs, np.zeros((columns, rhs.shape[1]))])
-    return np.linalg.lstsq(augmented, rhs_augmented)[0]
+    lambda_ = ridge * npl.norm(X, 2) ** 2
+    n_coef, n_cols = X.shape[1], Y.shape[1]
+    X_aug = np.vstack([X, np.sqrt(lambda_) * np.eye(n_coef)])
+    Y_aug = np.vstack([Y, np.zeros((n_coef, n_cols))])
+    return npl.lstsq(X_aug, Y_aug)[0]
 
 
 def fit(image, deltas=DELTAS, ridge=RIDGE):
-    """Fit levels coarse to fine; return the levels and the final residual."""
+    """Fit levels coarse to fine. Return the levels and the residual.
+
+    The isotropic Gaussian basis is separable: each grid term factors into a
+    row Gaussian times a column Gaussian, and the rectangular centre grid
+    makes the 2-D dictionary the outer product of those 1-D dictionaries.
+    The model is therefore ``A_r @ A @ A_c.T ≈ residual`` with dense
+    amplitudes ``A`` (Mobahi's ``a_j`` [1]). Solve that Kronecker ridge
+    least-squares problem in two steps (Fausett & Fulton [2]):
+    ``A_r M ≈ residual``, then ``A_c A.T ≈ M.T``. Separability is in the
+    basis, not in ``A``.
+
+    ``ridge`` is a relative Tikhonov penalty, scaled by the largest squared
+    singular value of each basis. Raising it shrinks the amplitudes and the
+    cancellation between them, at the cost of fit accuracy.
+    """
     residual = np.array(image, dtype=float)
     rows = np.arange(residual.shape[0], dtype=float)
     cols = np.arange(residual.shape[1], dtype=float)
@@ -85,34 +131,59 @@ def fit(image, deltas=DELTAS, ridge=RIDGE):
     for delta in deltas:
         row_centres = grid_centres(len(rows), delta)
         col_centres = grid_centres(len(cols), delta)
-        A_r = basis(rows, row_centres, delta)
-        A_c = basis(cols, col_centres, delta)
-        mid = ridge_solve(A_r, residual, ridge)             # A_r M ~ residual
-        amplitudes = ridge_solve(A_c, mid.T, ridge).T       # A_c A.T ~ M.T
-        residual = residual - A_r @ amplitudes @ A_c.T
+        row_basis = basis(rows, row_centres, delta)
+        col_basis = basis(cols, col_centres, delta)
+        # Two-step separable ridge [2]: rows, then columns.
+        row_fit = ridge_solve(row_basis, residual, ridge)
+        amplitudes = ridge_solve(col_basis, row_fit.T, ridge).T
+        residual = residual - row_basis @ amplitudes @ col_basis.T
         levels.append(Level(delta, row_centres, col_centres, amplitudes))
     return levels, residual
 
 
 def render(levels, shape, sigma=0.0, order=(0, 0)):
-    """The model smoothed by `sigma`, or its (row, col) derivative of `order`.
+    """Mobahi's smoothed sum, or a derivative of that sum.
 
-    Values are at the pixel centres of an image of `shape`.
+    The levels define Mobahi's Gaussian RBF sum ([1], §2.2, unnumbered),
+
+        f(x) = Σ_j a_j exp(−‖x − x_j‖² / (2 δ_j²)).
+
+    Its convolution with the normalised Gaussian ``k_σ`` ([1], §1,
+    "Notation") is closed form ([1], §2.2, unnumbered; stated and proved as
+    Lemma 1 in Appendix B):
+
+        [f ⋆ k_σ](x) = Σ_j a_j (δ_j / √(δ_j² + σ²))^n
+                           exp(−‖x − x_j‖² / (2 (δ_j² + σ²))).
+
+    So each level of width ``δ`` and amplitudes ``a_j`` becomes width
+    ``√(δ² + σ²)`` with amplitudes ``a_j (δ / √(δ² + σ²))^n``. At ``σ = 0``
+    this is ``f`` itself.
+
+    The derivatives are not in [1]. Each term factors into a row Gaussian
+    times a column Gaussian, so the ``(p, q)`` derivative differentiates the
+    row factor ``p`` times and the column factor ``q`` times (`basis`).
+    ``order`` is ``(row derivative, column derivative)``. Values are at pixel
+    centres.
     """
     rows = np.arange(shape[0], dtype=float)
     cols = np.arange(shape[1], dtype=float)
     out = np.zeros((len(rows), len(cols)))
     for level in levels:
+        # [1], Lemma 1: width δ becomes √(δ² + σ²) ...
         delta_s = np.sqrt(level.delta**2 + sigma**2)
+        # ... and amplitudes a_j are multiplied by (δ / √(δ² + σ²))^n.
         scale = (level.delta / delta_s) ** NDIM
-        out += scale * (
-            basis(rows, level.row_centres, delta_s, order[0])
-            @ level.amplitudes
-            @ basis(cols, level.col_centres, delta_s, order[1]).T
-        )
+        # One separable term per centre: (row factor) a_jk (column factor).
+        row_basis = basis(rows, level.row_centres, delta_s, order[0])
+        col_basis = basis(cols, level.col_centres, delta_s, order[1])
+        out += scale * row_basis @ level.amplitudes @ col_basis.T
     return out
 
 
 def hessian(levels, shape, sigma):
-    """Exact Hessian elements [H_rr, H_rc, H_cc] of the model smoothed by `sigma`."""
-    return [render(levels, shape, sigma, order) for order in ((2, 0), (1, 1), (0, 2))]
+    """``[Hrr, Hrc, Hcc]`` of Mobahi's smoothed sum at scale ``sigma``."""
+    return [
+        render(levels, shape, sigma, order=(2, 0)),
+        render(levels, shape, sigma, order=(1, 1)),
+        render(levels, shape, sigma, order=(0, 2)),
+    ]
