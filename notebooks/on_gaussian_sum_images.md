@@ -26,7 +26,7 @@ sums: convolution with a normalised Gaussian is another sum of the same form.
 This notebook writes that identity in his notation, fits the amplitudes with a
 two-step separable least squares [@fausett1994large_least] to `camera`,
 `coins` and greyscale `astronaut`, and evaluates the exact Hessian that
-`hessian_testing.md` §5.2 and `test_hessian_schemes.py` assert against.
+`hessian_testing.md` §5.2 and `test_hessian_metrics.py` assert against.
 
 Coordinates are in array order: the first index runs down the picture.
 
@@ -250,7 +250,7 @@ amplitudes.
 (sec-rms)=
 ## 5. An RMS test of the whole Hessian
 
-`test_hessian_schemes.py` measures the largest gap between one Hessian element
+`test_hessian_metrics.py` measures the largest gap between one Hessian element
 and its exact value, divided by the peak exact element. That number comes from
 one element at one pixel. An RMS test uses the whole matrix at every pixel.
 
@@ -323,7 +323,7 @@ def rms_error(got, truth, sigma):
 
 
 def max_error(got, truth, sigma):
-    """The measure of `test_hessian_schemes.py`: largest gap / peak exact element."""
+    """The measure of `test_hessian_metrics.py`: largest gap / peak exact element."""
     inner = interior(sigma)
     peak = max(np.abs(t[inner]).max() for t in truth)
     return max(np.abs(a[inner] - b[inner]).max() for a, b in zip(got, truth)) / peak
@@ -331,7 +331,7 @@ def max_error(got, truth, sigma):
 
 Three schemes. Two are the installed `hessian_matrix`, with and without
 `use_gaussian_derivatives`. The third is the moment-corrected Gaussian
-derivative of the `hessian-refactor` branch, which `test_hessian_schemes.py`
+derivative of the `hessian-refactor` branch, which `test_hessian_metrics.py`
 tests. `taps` is a transcription of `_gaussian_derivative_kernel` on that
 branch. The two agree to the last bit for `sigma` from 0.1 to 4 and all three
 orders; that check ran in the branch environment, outside this notebook.
@@ -422,7 +422,7 @@ Rotating both Hessians leaves $E$, $g$ and $S$ unchanged to rounding, and
 $E^2 = (g - 1)^2 + S^2$ to rounding.
 
 Each scheme on each fitted photograph. The last column is the measure of
-`test_hessian_schemes.py`:
+`test_hessian_metrics.py`:
 
 ```{code-cell} ipython3
 RMS_SIGMAS = (0.5, 1.0, 2.0, 4.0)
@@ -507,7 +507,7 @@ most of it is the lost gain, and removing the best gain leaves a smaller error
 at fine detail. For the moment-corrected Hessian the two error maps are the
 same, because $g$ is 1 to within $10^{-4}$.
 
-`test_hessian_schemes.py` asserts the two parts separately, with the floors
+`test_hessian_metrics.py` asserts the two parts separately, with the floors
 that this table measures, for the moment-corrected Hessian.
 
 ## 6. What this standard is for
@@ -519,6 +519,6 @@ discrete Hessian filter stays to the heat-semigroup derivatives of a
 photograph-like field that was built to have those derivatives in closed form.
 
 `hessian_testing.md` §5.2 measures the schemes against these three fits.
-`tests/skimage2/feature/test_hessian_schemes.py` asserts absolute accuracy of
+`tests/skimage2/feature/test_hessian_metrics.py` asserts absolute accuracy of
 the installed filter against Mobahi's smoothed sums — not that it beats an
 older scheme.

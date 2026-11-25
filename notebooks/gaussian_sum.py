@@ -21,7 +21,7 @@ sum with width ``sqrt(delta**2 + sigma**2)`` and amplitude
 smoothed image and its derivatives have closed forms; `render` and `hessian`
 evaluate them without truncation.
 
-The names and the fit match ``tests/skimage2/feature/test_hessian_schemes.py``
+The names and the fit match ``tests/skimage2/feature/test_hessian_metrics.py``
 on the scikit-image ``hessian-refactor`` branch.
 """
 
