@@ -17,7 +17,6 @@ project:
     - file: notebooks/on_taps.md
     - file: notebooks/hessian_testing.md
     - file: notebooks/on_gaussian_sum_images.md
-    - file: notebooks/hessian_port_notes.md
     - file: notebooks/on_frangi.md
     - file: notebooks/frangi_testing.md
     - file: notebooks/on_meijering.md
