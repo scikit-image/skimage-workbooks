@@ -8,6 +8,8 @@ project:
   github: https://github.com/scikit-image/skimage-workbooks
   toc:
     - file: index.md
+    - file: notebooks/on_hessian_matrix_det.md
+    - file: notebooks/on_hessian_det_approx.md
     - file: notebooks/on_pyramid_laplacian.md
     - file: notebooks/on_hessian.md
     - file: notebooks/on_hessian_filter.md

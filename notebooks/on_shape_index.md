@@ -13,6 +13,7 @@ kernelspec:
 ---
 
 :::{changelog}
+2026-11-27 | opencode:deepseek-v4.1-flash | Split the runtime cost into its own section and compare timings across image sizes
 2026-11-27 | claude-code:claude-opus-5-5 | Compare the third-moment kernel with Gaussian derivatives at every scale on the fitted photographs; measure what it changes against finite differences
 2026-11-27 | claude-code:claude-opus-5-5 | Add the algorithm in 1-D and its extension to 2-D; add an RMS test of the whole Hessian; test both routes against sums of Gaussians fitted to photographs, with and without noise; explain why a tie with negative eigenvalues is a cap; compare Lindeberg's discretisations; check the transcription against `hessian-refactor`; add Murphy and colleagues to the literature; relate the principal curvatures to the Hessian eigenvalues; split the blob by shape, not by storage; add figures of the algorithm; audit claims, fix cell headings, add tutorial links; add a figure of the atan2 fix
 2026-11-21 | cursor:composer | Replace assisted-by with changelog
@@ -798,7 +799,7 @@ $\lambda_1 \geq \lambda_2$ of the Hessian of the image $f(r, c)$, in the fixed
 pixel frame, and puts them in the same formula. Where the gradient of $f$ is
 zero, as at a peak or a pit, $\lambda_i = \kappa_i$ for the surface
 $z = f(r, c)$. Elsewhere the $\lambda_i$ are the second-order shape of the
-intensity function, not the curvatures of that surface (§12.2). The signs
+intensity function, not the curvatures of that surface (§13.2). The signs
 agree: a bright peak has $\lambda_1, \lambda_2 < 0$, as a convex surface has
 $\kappa_1, \kappa_2 < 0$ with Koenderink and van Doorn's outward normal, and
 both give $s = +1$.
@@ -1016,7 +1017,7 @@ of a hill next to the bottom of a pit on the scale.
 The names depend on viewing the surface from above. Seen from below, or with
 curvature measured against the other normal, every sign flips, and a bright
 spot becomes a cup. `pycurv` does this in effect, by reversing the denominator
-(§12). For scikit-image, the docstring table and the values next to a tie both
+(§13). For scikit-image, the docstring table and the values next to a tie both
 put a bright spot at $+1$, so within that convention a tie with negative
 eigenvalues is a cap.
 
@@ -1807,7 +1808,7 @@ the discrete analogue with central differences "is then a much better choice".
 A later paper defines a **hybrid**: the sampled, normalised Gaussian, followed
 by the same central differences [@lindeberg2025approximation_properties]. The
 finite-difference route of §3 is close to a hybrid, but it applies $\delta_x$
-twice for the diagonal elements, not $\delta_{xx}$ (§15.3). The
+twice for the diagonal elements, not $\delta_{xx}$ (§16.3). The
 Gaussian-derivative route of §3 is the sampled route with its moments restored.
 Lindeberg's comparison does not include it.
 
@@ -2364,7 +2365,7 @@ and the fitted sum understates how far apart they are.
 
 +++
 
-## 11. Noise and cost
+## 11. Noise
 
 The finite-difference shape index is steadier under noise, by a factor of
 about 1.8 at `sigma` 0.5 and 1, and 1.2 at `sigma` 2, at the larger noise
@@ -2520,11 +2521,15 @@ order reverses at about 10% noise. At `sigma` 2 and 4 the two routes are within
 1 percentage point of each other from 10% noise. Wherever finite differences are
 ahead, both routes put more than half of the pixels in the wrong class.
 
-Cost:
++++
+
+## 12. Runtime cost of GD compared to FD
+
+The reference size is the 256 by 256 decimated camera of §6:
 
 ```{code-cell} ipython3
 TIME_RATIO = {}
-rows = []
+timing_rows = []
 for sigma in (0.5, 1.0, 2.0, 4.0):
     timing = {}
     for name, route in ROUTES:
@@ -2535,9 +2540,10 @@ for sigma in (0.5, 1.0, 2.0, 4.0):
             runs.append(time.perf_counter() - started)
         timing[SHORT[name]] = min(runs)
     TIME_RATIO[sigma] = timing["GD"] / timing["FD"]
-    rows.append({"sigma": sigma, **{n: f"{t * 1e3:.1f} ms" for n, t in timing.items()},
-                 "GD / FD": f"{TIME_RATIO[sigma]:.1f}x"})
-show_table(pd.DataFrame(rows), index="sigma")
+    timing_rows.append({"sigma": sigma,
+                        **{n: f"{t * 1e3:.1f} ms" for n, t in timing.items()},
+                        "GD / FD": f"{TIME_RATIO[sigma]:.1f}x"})
+show_table(pd.DataFrame(timing_rows), index="sigma")
 ```
 
 The finite-difference route smooths once, with a kernel of about $8\sigma$
@@ -2545,9 +2551,44 @@ taps, and then takes cheap differences. The Gaussian-derivative route makes two
 passes for each of three elements, with kernels of about $16\sigma$ taps. So
 the ratio grows with `sigma`.
 
+The ratio is largely a property of the kernels, not of the image size. The same
+timing on random square images of four sizes, at `sigma` 1 and 4, uses the best
+of three runs for each route:
+
+```{code-cell} ipython3
+SIZE_SIGMAS = (1.0, 4.0)
+SIZES = (128, 256, 512, 1024)
+timing_rng = np.random.default_rng(0)
+size_rows = []
+for size in SIZES:
+    image = timing_rng.normal(size=(size, size))
+    for sigma in SIZE_SIGMAS:
+        timing = {}
+        for name, route in ROUTES:
+            runs = []
+            for _ in range(3):                  # best of three, not the mean
+                started = time.perf_counter()
+                route(image, sigma)
+                runs.append(time.perf_counter() - started)
+            timing[SHORT[name]] = min(runs)
+        size_rows.append({
+            "size": f"{size} x {size}",
+            "sigma": sigma,
+            **{n: f"{t * 1e3:.1f} ms" for n, t in timing.items()},
+            "GD / FD": f"{timing['GD'] / timing['FD']:.1f}x",
+        })
+show_table(pd.DataFrame(size_rows), index=["size", "sigma"])
+```
+
+Above 128 by 128 the ratio is nearly flat: about 2.4 to 2.7 at `sigma` 1 and
+4.2 to 4.4 at `sigma` 4. The 128-by-128 row is lower because fixed per-call
+overhead is a larger share of a short run. The absolute times scale roughly with
+the number of pixels: a side 4 times longer takes about 17 to 19 times as long
+on either route.
+
 +++
 
-## 12. What other libraries do
+## 13. What other libraries do
 
 The shape index appears elsewhere almost only on explicit surfaces, such as
 triangle meshes. There a quadratic is fitted to a vertex neighbourhood, so the
@@ -2630,9 +2671,9 @@ and `pycurv` give 0.
 
 +++
 
-### 12.1 Published forms
+### 13.1 Published forms
 
-The papers of §15 use four forms of the same quantity. They differ in range, in
+The papers of §16 use four forms of the same quantity. They differ in range, in
 sign convention, and in what happens at a tie. The cell below evaluates each
 form as printed, with NumPy floats, so that division by zero gives an infinity.
 A form is correct at a tie when the cap tie has the same sign as the dome.
@@ -2711,7 +2752,7 @@ the code behind its results.
 
 +++
 
-### 12.2 The Hessian is not the intensity surface
+### 13.2 The Hessian is not the intensity surface
 
 The docstring describes the image as a surface "with intensities representing
 heights". The principal curvatures of that surface equal the eigenvalues of
@@ -2766,11 +2807,11 @@ for the Hessian form, not for the surface form that they compute.
 
 +++
 
-## 13. Ways forward
+## 14. Ways forward
 
 +++
 
-### 13.1 Resolve the umbilic
+### 14.1 Resolve the umbilic
 
 Replace the quotient with the two-argument arctangent of §5, and return NaN
 only where both eigenvalues are zero. This changes only exact ties, and the
@@ -2779,9 +2820,9 @@ bright pixel.
 
 +++
 
-### 13.2 Move `shape_index` to Gaussian derivatives
+### 14.2 Move `shape_index` to Gaussian derivatives
 
-The measured gains and costs, from §6, §7, §7.4 and §11:
+The measured gains and costs, from §6, §7, §7.4 and §12:
 
 ```{code-cell} ipython3
 show_table(pd.DataFrame(
@@ -2799,11 +2840,11 @@ The change makes the shape index closer to the closed form at every `sigma`,
 on the blob and on the fitted photographs.
 It also reclassifies most of a photograph at small `sigma` and passes more
 noise. It takes about 2 to 3 times as long from `sigma` 0.5 to 2, and the ratio
-grows with `sigma` (§11).
+grows with `sigma` (§12).
 
 +++
 
-### 13.3 Impose the third moment on the first-derivative kernel
+### 14.3 Impose the third moment on the first-derivative kernel
 
 §9 measures a factor of about 2 in the shape index inside the blob at `sigma`
 0.3 and 0.5, and little change above 0.8. On the fitted photographs it halves
@@ -2908,11 +2949,11 @@ exponential, and noise.
 
 +++
 
-## 14. What not to conclude
+## 15. What not to conclude
 
 +++
 
-### 14.1 That finite differences are more accurate at small `sigma`
+### 15.1 That finite differences are more accurate at small `sigma`
 
 An average over the whole interior of the blob says so, and §7 shows why: most
 of the pixels are in the far field, below $10^{-3}$ of the peak. There the blob
@@ -2925,7 +2966,7 @@ pixels in the wrong class at every `sigma` tested.
 
 +++
 
-### 14.2 That a switch of route at some `sigma` gets the best of both
+### 15.2 That a switch of route at some `sigma` gets the best of both
 
 §7 finds no `sigma` where finite differences are closer inside the blob. A
 switch would also make the shape index jump across the switch point:
@@ -2952,7 +2993,7 @@ about twice as much.
 
 +++
 
-### 14.3 That lower noise means a better estimate
+### 15.3 That lower noise means a better estimate
 
 §11 shows the finite-difference elements pass less noise at equal gain on a
 quadratic. They also respond less to the high frequencies in real structure,
@@ -2962,11 +3003,11 @@ put more than half of them in the wrong class (§11).
 
 +++
 
-## 15. What the literature says
+## 16. What the literature says
 
 +++
 
-### 15.1 The measure
+### 16.1 The measure
 
 Koenderink and van Doorn define the shape index and the curvedness together, as
 the polar angle and radius of the $(\kappa_1, \kappa_2)$ plane
@@ -2984,12 +3025,12 @@ take the curvatures as the eigenvalues of the matrix of derivatives of the
 normals, and recognise objects from histograms of the index
 [@worthington2001object_recognition]. Bonde, Badrinarayanan and Cipolla select
 a characteristic scale at each point of a point cloud before they compute the
-index [@bonde2013multi_scale]. §12.1 compares the forms of the index that these
+index [@bonde2013multi_scale]. §13.1 compares the forms of the index that these
 papers print.
 
 +++
 
-### 15.2 The volumetric Hessian
+### 16.2 The volumetric Hessian
 
 Yoshida and Näppi compute the curvature of the iso-surface through each voxel
 of a CT volume, from the first and second derivatives of the volume, and keep
@@ -3041,7 +3082,7 @@ are sampled.
 
 Yang, Han and Chen smooth each slice with an $11 \times 11$ Gaussian kernel and
 compute the curvature of the intensity surface in a $7 \times 7$ neighbourhood
-[@yang2017automatic_segmentation]. §12.1 and §12.2 test their formulas.
+[@yang2017automatic_segmentation]. §13.1 and §13.2 test their formulas.
 
 Ben-Noah, Hidalgo and Dentz do not use the shape index
 [@ben_noah2024porespace_partitioning]. They use the determinant and the
@@ -3054,7 +3095,7 @@ their derivative operator. None discusses an exact tie.
 
 +++
 
-### 15.3 The discretisation
+### 16.3 The discretisation
 
 Lindeberg's discrete analogue of the Gaussian and its central-difference
 derivatives are from 1990 and 1993 [@lindeberg1990scalespace_discrete;
@@ -3109,7 +3150,7 @@ curvedness.
 
 +++
 
-## 16. Summary
+## 17. Summary
 
 | question | answer |
 | --- | --- |
@@ -3124,17 +3165,18 @@ curvedness.
 | what the formula does at an umbilic | where the eigenvalues tie exactly it gives the wrong end of the scale, in the library docstring example too (§5) |
 | the fix for the umbilic | $s = -(2/\pi)\,\operatorname{atan2}(\lambda_1 + \lambda_2, \lambda_1 - \lambda_2)$, NaN only at the planar point; no change on the photograph (§5) |
 | does a third-moment mixed kernel help | about 2 times inside the blob at `sigma` 0.3 and 0.5, little above 0.8; on the fitted photographs, wrong class from about 21% to 10% at `sigma` 0.3 and 13% to 9.5% at 0.5, and the same as GD from 0.75 (§9) |
-| does it change where finite differences win | it halves how often FD is closer per pixel on the fitted photographs at `sigma` 0.3; FD stays closer in the blob's far field at 0.3 and 0.5, and under noise (§13.3) |
-| reasons to keep finite differences | less noise per unit gain, lower cost, and reproduction of earlier results (§11); on the fitted camera with noise of 1% of the image SD at `sigma` 0.5, or about 10% at 1, fewer pixels in the wrong class, but more than half wrong for both routes (§11) |
-| other libraries | `pycurv` reverses the denominator and raises at an umbilic; FreeSurfer omits $2/\pi$ and returns 0 at an umbilic (§12) |
-| published forms | of four printed forms, only Koenderink's, which scikit-image uses, fails at a tie; Yang's form gives NaN at near ties (§12.1) |
-| Hessian or intensity surface | the Hessian shape index is invariant to intensity scale; the surface shape index is not (§12.2) |
+| does it change where finite differences win | it halves how often FD is closer per pixel on the fitted photographs at `sigma` 0.3; FD stays closer in the blob's far field at 0.3 and 0.5, and under noise (§14.3) |
+| reasons to keep finite differences | less noise per unit gain, lower cost, and reproduction of earlier results (§11, §12); on the fitted camera with noise of 1% of the image SD at `sigma` 0.5, or about 10% at 1, fewer pixels in the wrong class, but more than half wrong for both routes (§11) |
+| other libraries | `pycurv` reverses the denominator and raises at an umbilic; FreeSurfer omits $2/\pi$ and returns 0 at an umbilic (§13) |
+| published forms | of four printed forms, only Koenderink's, which scikit-image uses, fails at a tie; Yang's form gives NaN at near ties (§13.1) |
+| Hessian or intensity surface | the Hessian shape index is invariant to intensity scale; the surface shape index is not (§13.2) |
 
 +++
 
 ### Limits
 
-One photograph (`camera`, decimated to 256 by 256) for §6 and §11, one family
+One photograph (`camera`, decimated to 256 by 256) for §6 and §11; §12 also
+times random square images from 128 by 128 to 1024 by 1024. One family
 of isotropic Gaussian blobs, and sums of Gaussians fitted to three photographs
 (`camera`, `coins` and greyscale `astronaut`, full size), at `sigma` from 0.3
 to 8, in two dimensions only. The split at $10^{-3}$ of the peak is a choice
@@ -3147,10 +3189,11 @@ properties of the discrete analogue, or the integrated kernels. The noise
 figures are 12 draws at two amplitudes on pixels that carry the top 70% of
 curvature; the noise test on the fitted camera is three draws of white
 Gaussian noise at each level. The timings are the best of three runs on one
-machine, and vary between runs when the machine is loaded. `float32`
+machine, at the 256-by-256 reference size and the four sizes of §12, and vary
+between runs when the machine is loaded. `float32`
 input and `mode` other than `constant` are not tested. The Gaussian-derivative
 route is a transcription, because the installed scikit-image does not have the
-branch. The sign convention of `pycurv` is not tested. §12.1 evaluates the printed
+branch. The sign convention of `pycurv` is not tested. §13.1 evaluates the printed
 formulas of the papers, not their code.
 
 ```{code-cell} ipython3
