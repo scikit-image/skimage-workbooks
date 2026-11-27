@@ -1,4 +1,5 @@
 ---
+title: 'On the shape index'
 jupytext:
   text_representation:
     extension: .md
