@@ -18,7 +18,7 @@ FIXTURES_DIR = notebooks/bresenham_nd_fixtures
 ZINGL_BIN = $(FIXTURES_DIR)/zingl_line3d
 
 # Shared Zotero export; private repo, so this target needs a logged-in $(GH).
-SKIMAGE_REFS_REPO ?= matthew-brett/skimage-refs
+SKIMAGE_REFS_REPO ?= scikit-image/zotsync
 SKIMAGE_REFS_REF ?= main
 LIBRARY_BIB = library.bib
 

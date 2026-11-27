@@ -34,3 +34,4 @@ site:
   template: book-theme
   options:
     style: _plugins/workbook_meta.css
+    logo_text: scikit-image technical workbooks

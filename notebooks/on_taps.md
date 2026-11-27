@@ -238,7 +238,7 @@ fig.suptitle(r"$\sigma = 0.1$: raw $k_2$ vs repaired", y=1.02)
 fig.tight_layout()
 ```
 
-Lindeberg [@lindeberg2024discrete_gaussian] compares three
+Lindeberg [@lindeberg2024discrete_approximations] compares three
 discretisations of Gaussian derivatives: sampling $G^{(\alpha)}$, integrating
 $G^{(\alpha)}$ over each pixel, and the discrete analogue of the Gaussian
 followed by small-support central differences. For sampled second-order
@@ -575,7 +575,7 @@ overwrites.
 
 The constructions above all start from a sample of a continuous second
 derivative (or from $k_0$ times that analytic factor) and then repair
-moments. Lindeberg [@lindeberg2024discrete_gaussian] uses a different
+moments. Lindeberg [@lindeberg2024discrete_approximations] uses a different
 operator. Smooth with the discrete analogue of the Gaussian
 
 $$
@@ -697,14 +697,14 @@ $10^{-3}$ are the values in the table above. The discrete-analogue route is
 therefore a different operator from either moment repair, not a rephrasing of
 them. DIPlib and the centre-rebuild path stay on the sampling route;
 Lindeberg prefers the disc route at fine $\sigma$
-[@lindeberg2024discrete_gaussian].
+[@lindeberg2024discrete_approximations].
 
 (sec-accuracy)=
 ## 10. Accuracy against continuous $G''$
 
 Two contracts differ. Lindeberg's monomial test asks an order-$2$ operator for
 response $2$ on $x^{2}$ and $0$ on $1$ and $x$
-[@lindeberg2024discrete_gaussian]. Continuous scale-space asks the
+[@lindeberg2024discrete_approximations]. Continuous scale-space asks the
 kernel to match $G'' * f$ for smooth $f$. Centre rebuild meets the monomial
 contract by construction. The cosine
 

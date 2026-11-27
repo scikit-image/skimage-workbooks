@@ -167,7 +167,7 @@ It applies two successive **first**-order passes rather than one second-order
 pass, and each pass uses `sigma / sqrt(2)`. For continuous Gaussians, two
 Gaussians of that width compose to a Gaussian of width `sigma`. SciPy uses
 sampled and truncated kernels, so this is the continuous target, not an exact
-discrete identity; Lindeberg [@lindeberg1993discrete_derivative; @lindeberg2024discrete_gaussian]
+discrete identity; Lindeberg [@lindeberg1993discrete_derivative; @lindeberg2024discrete_approximations]
 describe the loss of the semigroup property for sampled Gaussians, especially
 at fine scales.
 
@@ -237,7 +237,7 @@ For this blob, interior crop, and list of tested scales, the Gaussian-derivative
 route reaches floating-point agreement above `sigma = 1`, while finite
 differences stay wrong by a few percent. This is a measurement of this test,
 not a general exactness claim. Lindeberg's 2024 discretization
-study [@lindeberg2024discrete_gaussian] reports
+study [@lindeberg2024discrete_approximations] reports
 that sampled Gaussian derivatives are usually accurate above about one pixel,
 but that the threshold depends on derivative order and task. Below about
 `sigma = 0.85` they swap places here, and the Gaussian route degrades sharply:
@@ -1583,7 +1583,7 @@ answers the same question a different way. Rather than sample the continuous
 Gaussian and correct it, build the **discrete analogue** of the Gaussian,
 `T(n; t) = exp(-t) * I_n(t)` for modified Bessel `I_n` and `t = sigma**2`, and
 take derivatives with small-support central differences — `(-1/2, 0, 1/2)` and
-`(1, -2, 1)`. A survey [@lindeberg2024discrete_gaussian] of the three discretisations
+`(1, -2, 1)`. A survey [@lindeberg2024discrete_approximations] of the three discretisations
 finds that sampled Gaussian derivatives "perform very poorly at very fine
 scales" while the discrete analogue "performs substantially better", which is
 this notebook's `sigma = 0.5` row stated from the other direction.
