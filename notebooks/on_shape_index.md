@@ -12,6 +12,7 @@ kernelspec:
 ---
 
 :::{changelog}
+2026-11-27 | claude-code:claude-opus-5-5 | Compare the third-moment kernel with Gaussian derivatives at every scale on the fitted photographs; measure what it changes against finite differences
 2026-11-27 | claude-code:claude-opus-5-5 | Add the algorithm in 1-D and its extension to 2-D; add an RMS test of the whole Hessian; test both routes against sums of Gaussians fitted to photographs, with and without noise; explain why a tie with negative eigenvalues is a cap; compare Lindeberg's discretisations; check the transcription against `hessian-refactor`; add Murphy and colleagues to the literature; relate the principal curvatures to the Hessian eigenvalues; split the blob by shape, not by storage; add figures of the algorithm; audit claims, fix cell headings, add tutorial links; add a figure of the atan2 fix
 2026-11-21 | cursor:composer | Replace assisted-by with changelog
 2026-11-17 | claude-code:claude-opus-5-5 | Restrict the blob comparison to the blob; add umbilic fix, far-field proof and published-formula checks; check literature against full texts
@@ -2244,27 +2245,33 @@ The third moment improves the mixed element by a factor of about 50 at `sigma`
 the shape index changes by less than 15%, although the mixed element still
 improves by a factor of about 13 at 0.8 and 6 at 1.
 
-On the fitted photographs of §7.4:
+On the fitted photographs of §7.4, at the scales of §7.5. Each entry is the
+range over the three photographs:
 
 ```{code-cell} ipython3
-rows = []
-for sigma in (0.3, 0.5, 0.8):
+THIRD = {}                                       # sigma: [(E, wrong), ...]
+for sigma in LINDEBERG_SIGMAS:
     for name in RBF:
         image, H_true, mask = rbf_truth(name, sigma)
-        s_true = s_from(H_true)
-        row = {"photograph": name, "sigma": sigma}
-        for route_name, route in THIRD_ROUTES:
-            H = route(image, sigma)
-            s = s_from(H)
-            row[f"E, {route_name}"] = f"{hessian_rms(H, H_true, mask):.1e}"
-            row[f"wrong class, {route_name}"] = f"{100 * wrong_class(s, s_true, mask):.1f}%"
-        rows.append(row)
-show_table(pd.DataFrame(rows), index=["photograph", "sigma"])
+        H = gd_third(image, sigma)
+        THIRD.setdefault(sigma, []).append(
+            (hessian_rms(H, H_true, mask), wrong_class(s_from(H), s_from(H_true), mask)))
+
+percent, sci = (lambda v: f"{100 * v:.1f}%"), (lambda v: f"{v:.1e}")
+show_table(pd.DataFrame(
+    [{"sigma": s,
+      "wrong class, GD": span([e[1] for e in LINDEBERG["Gaussian derivatives", s]], percent),
+      "wrong class, GD, third": span([e[1] for e in THIRD[s]], percent),
+      "E, GD": span([e[0] for e in LINDEBERG["Gaussian derivatives", s]], sci),
+      "E, GD, third": span([e[0] for e in THIRD[s]], sci)}
+     for s in LINDEBERG_SIGMAS]), index="sigma")
 ```
 
 The third moment halves the fraction of pixels in the wrong class at `sigma`
-0.3, from about 21% to about 10%, and cuts it from about 13% to about 9% at 0.5.
-At 0.8 the fraction changes by at most 0.1 percentage points.
+0.3, from 20% to 22% down to about 10%, and halves $E$. At 0.5 it cuts the
+fraction from 13% to 14% down to about 9.5%, and $E$ by about 30%. From 0.75
+the two routes agree to within 0.1 percentage points on the class, and on $E$
+to the printed precision, except for rounding at `sigma` 4.
 
 +++
 
@@ -2800,8 +2807,103 @@ grows with `sigma` (§11).
 §9 measures a factor of about 2 in the shape index inside the blob at `sigma`
 0.3 and 0.5, and little change above 0.8. On the fitted photographs it halves
 the fraction of pixels in the wrong class at `sigma` 0.3, and cuts it from about
-13% to about 9% at 0.5. The cost is one more condition per
-kernel and a badly conditioned solve at `sigma` 0.3.
+13% to about 9% at 0.5. From `sigma` 0.75 it gives the same result as the
+Gaussian-derivative route. The cost is one more condition per kernel and a
+badly conditioned solve at `sigma` 0.3.
+
+The third moment changes how often finite differences come out ahead. Per
+pixel on the fitted photographs, the fraction where the finite-difference
+shape index is closer to the exact one, against each Gaussian-derivative
+route, over all interior pixels and over the pixels near rank one of §8:
+
+```{code-cell} ipython3
+FD_VS = (("GD", gd_hessian), ("GD, third", gd_third))
+
+
+def fd_closer_third(name, sigma, ratio=0.1):
+    """Where FD is closer to the exact s than each GD route."""
+    image, H_true, mask = rbf_truth(name, sigma)
+    s_true = s_from(H_true)
+    fd_err = np.abs(s_from(fd_hessian(image, sigma)) - s_true)
+    l1, l2 = hessian_matrix_eigvals(H_true)
+    rank_one = mask & (np.minimum(np.abs(l1), np.abs(l2))
+                       < ratio * np.maximum(np.abs(l1), np.abs(l2)))
+    row = {"photograph": name, "sigma": sigma}
+    for route_name, route in FD_VS:
+        closer = fd_err < np.abs(s_from(route(image, sigma)) - s_true)
+        row[f"FD closer than {route_name}"] = f"{100 * closer[mask].mean():.1f}%"
+        row[f"near rank one, than {route_name}"] = f"{100 * closer[rank_one].mean():.1f}%"
+    return row
+
+
+show_table(pd.DataFrame([fd_closer_third(n, s) for s in (0.3, 0.5) for n in RBF]),
+           index=["photograph", "sigma"])
+```
+
+Against the third-moment route, finite differences are closer at 16% to 18%
+of the pixels at `sigma` 0.3, against 33% to 36% for the Gaussian-derivative
+route, and at 15% to 17% at 0.5, against 23% to 25%. Near rank one the
+fractions fall from 45% to 50% to 22% to 26% at `sigma` 0.3.
+
+The two cases where finite differences win do not change. In the far field of
+the blob (§7.1, §8), the mean error in $s$:
+
+```{code-cell} ipython3
+def far_row(sigma):
+    """Mean |s - s_exact| in the far field of the blob, per route."""
+    image, H_true = blob_truth(BLOB_SIZE, BLOB_WIDTH, sigma)
+    _, far = zones(BLOB_SIZE, BLOB_WIDTH, sigma)
+    s_true = s_from(H_true)
+    return {"sigma": sigma,
+            **{f"far field, {n}": f"{np.mean(np.abs(s_from(r(image, sigma)) - s_true)[far]):.1e}"
+               for n, r in (("FD", fd_hessian), *FD_VS)}}
+
+
+show_table(pd.DataFrame([far_row(s) for s in (0.3, 0.5, 0.8)]), index="sigma")
+```
+
+At `sigma` 0.3 and 0.5 the third moment cuts the far-field error by a factor of
+about 1.2 and 2, but finite differences stay closer, by a factor of more than
+7. §8 proves that the finite-difference shape index is exact on any
+exponential, and the third moment does not give the Gaussian-derivative route
+that property. From `sigma` 0.8 both Gaussian-derivative routes are closer.
+
+Under noise, on the fitted camera at `sigma` 0.5, the fraction of pixels in the
+wrong class (mean of three draws, as in §11), and the noise gain of each
+Hessian element:
+
+```{code-cell} ipython3
+NOISE_ROUTES = (("FD", fd_hessian), *FD_VS)
+image, H_true, mask = rbf_truth("camera", 0.5)
+s_true = s_from(H_true)
+rng = np.random.default_rng(0)
+rows = []
+for level in (0.0, 0.01, 0.03):
+    wrong = {n: [] for n, _ in NOISE_ROUTES}
+    for _ in range(3 if level else 1):
+        noisy = image + level * image[mask].std() * rng.normal(size=image.shape)
+        for n, r in NOISE_ROUTES:
+            wrong[n].append(wrong_class(s_from(r(noisy, 0.5)), s_true, mask))
+    rows.append({"noise SD / image SD": f"{level:g}",
+                 **{f"wrong class, {n}": f"{100 * np.mean(v):.0f}%" for n, v in wrong.items()}})
+show_table(pd.DataFrame(rows), index="noise SD / image SD")
+show_table(pd.DataFrame(
+    [{"sigma": s, "route": n,
+      **{f"noise gain, {e}": f"{g:.2f}" for e, g in zip(("Hii", "Hij", "Hjj"), noise_gain(r, s))}}
+     for s in (0.3, 0.5) for n, r in NOISE_ROUTES]), index="sigma")
+```
+
+With 1% noise, both Gaussian-derivative routes put 57% of the pixels in the
+wrong class, against 54% for finite differences. The third moment raises the
+noise gain of $H_{ij}$, from 0.50 to 0.78 at `sigma` 0.3, and leaves the
+diagonal elements alone. On the diagonal elements, both Gaussian-derivative
+routes have about 4 to 5 times the noise gain of finite differences at `sigma`
+0.3 and 0.5.
+
+So the third moment removes about half of the advantage that finite
+differences show per pixel on photographs at `sigma` 0.3 and 0.5. It does not
+change the two cases where finite differences win: tails that are close to an
+exponential, and noise.
 
 +++
 
@@ -3020,7 +3122,8 @@ curvedness.
 | where the finite-difference error comes from inside the blob | mostly the diagonal elements, from the doubled central difference (§8) |
 | what the formula does at an umbilic | where the eigenvalues tie exactly it gives the wrong end of the scale, in the library docstring example too (§5) |
 | the fix for the umbilic | $s = -(2/\pi)\,\operatorname{atan2}(\lambda_1 + \lambda_2, \lambda_1 - \lambda_2)$, NaN only at the planar point; no change on the photograph (§5) |
-| does a third-moment mixed kernel help | about 2 times inside the blob at `sigma` 0.3 and 0.5, little above 0.8; on the fitted photographs, wrong class from about 21% to 10% at `sigma` 0.3 and 13% to 9% at 0.5 (§9) |
+| does a third-moment mixed kernel help | about 2 times inside the blob at `sigma` 0.3 and 0.5, little above 0.8; on the fitted photographs, wrong class from about 21% to 10% at `sigma` 0.3 and 13% to 9.5% at 0.5, and the same as GD from 0.75 (§9) |
+| does it change where finite differences win | it halves how often FD is closer per pixel on the fitted photographs at `sigma` 0.3; FD stays closer in the blob's far field at 0.3 and 0.5, and under noise (§13.3) |
 | reasons to keep finite differences | less noise per unit gain, lower cost, and reproduction of earlier results (§11); on the fitted camera with noise of 1% of the image SD at `sigma` 0.5, or about 10% at 1, fewer pixels in the wrong class, but more than half wrong for both routes (§11) |
 | other libraries | `pycurv` reverses the denominator and raises at an umbilic; FreeSurfer omits $2/\pi$ and returns 0 at an umbilic (§12) |
 | published forms | of four printed forms, only Koenderink's, which scikit-image uses, fails at a tie; Yang's form gives NaN at near ties (§12.1) |
