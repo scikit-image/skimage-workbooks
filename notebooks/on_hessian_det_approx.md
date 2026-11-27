@@ -29,13 +29,23 @@ Coordinates are in array order: $r$ runs down the rows, $c$ across the
 columns. `on_hessian_matrix_det.md` compares the box route with the
 finite-difference and Gaussian-derivative routes of `approximate=False`.
 
+`on_blob_dog.md` first examined these box filters, as part of a comparison of
+the three blob detectors, and listed four defects, D1 to D4. This notebook
+repeats each of its `blob_doh` measurements and replaces that discussion.
+§12.1 lists each conclusion of `on_blob_dog.md`, the section here that tests
+it, and whether it holds. References to sections of `on_blob_dog.md` are to
+its version of 2026-11-16 (commit `7e3b2b2`), before the `blob_doh` analysis
+moved here.
+
 ## 1. Setup
 
 ```{code-cell} ipython3
+import time
 import warnings
 
 import numpy as np
 import pandas as pd
+import scipy.ndimage as ndi
 import matplotlib.pyplot as plt
 from matplotlib.colors import LinearSegmentedColormap, TwoSlopeNorm
 
@@ -227,7 +237,45 @@ for sigma in (1, 1.7, 2, 2.5, 3, 3.7, 4, 5.5, 8):
 show_table(pd.DataFrame(rows), floatfmt=".1e")
 ```
 
-They agree to rounding away from the border. §4.6 measures the border.
+They agree to rounding away from the border. `skimage_layout` counts zeros
+outside the image. `current_det` also copies the border rule of `_integ`,
+which clips each box corner to the image (§4.6), and the `max(0, …)` clamp
+(§4.5):
+
+```{code-cell} ipython3
+def current_det(image, sigma):
+    """`_hessian_matrix_det` on `integral_image(image)`, vectorised, border included."""
+    I = ski.transform.integral_image(np.asarray(image, dtype=float))
+    H, W = I.shape
+    size = int(3 * sigma)
+    s2, s3 = (size - 1) // 2, size // 3
+    w_i = 1.0 / size / size
+    r, c = np.indices(I.shape)
+
+    def integ(r, c, rl, cl):
+        """`_integ`: clip the corner, then add the extent to the clipped corner."""
+        r = np.clip(r, 0, H - 1)
+        c = np.clip(c, 0, W - 1)
+        r2 = np.clip(r + rl, 0, H - 1)
+        c2 = np.clip(c + cl, 0, W - 1)
+        return np.maximum(0.0, I[r, c] + I[r2, c2] - I[r, c2] - I[r2, c])
+
+    dxy = -(integ(r - s3, c + 1, s3, s3) + integ(r + 1, c - s3, s3, s3)
+            - integ(r - s3, c - s3, s3, s3) - integ(r + 1, c + 1, s3, s3)) * w_i
+    dxx = -(integ(r - s3 + 1, c - s2, 2 * s3 - 1, size)
+            - 3 * integ(r - s3 + 1, c - s3 // 2, 2 * s3 - 1, s3)) * w_i
+    dyy = -(integ(r - s2, c - s3 + 1, size, 2 * s3 - 1)
+            - 3 * integ(r - s3 // 2, c - s3 + 1, s3, 2 * s3 - 1)) * w_i
+    return dxx * dyy - 0.81 * dxy**2
+
+
+worst = max(np.abs(current_det(noise, s) - hessian_matrix_det(noise, s)).max()
+            / np.abs(hessian_matrix_det(noise, s)).max()
+            for s in (1, 1.7, 2.5, 3, 4, 8, 16))
+print(f"current_det against the installed code, whole image: {worst:.1e}")
+```
+
+`current_det` is the installed code at every pixel, border included.
 
 ### 2.3 Measurement
 
@@ -261,6 +309,17 @@ def disk(n, radius, centre=None):
 def peak(D):
     """(row, column) of the maximum of `D`."""
     return tuple(int(v) for v in np.unravel_index(np.argmax(D), D.shape))
+
+
+def best_time(func, repeats=5):
+    """Shortest of `repeats` wall-clock times of `func()`, in milliseconds."""
+    func()
+    times = []
+    for _ in range(repeats):
+        start = time.perf_counter()
+        func()
+        times.append(time.perf_counter() - start)
+    return 1e3 * min(times)
 ```
 
 ## 3. The problem on one disk
@@ -437,6 +496,7 @@ the determinant. The move puts each output one pixel up and to the left of
 the image structure that makes it: a feature at pixel $p$ shows at
 $p - (1, 1)$.
 
+(sec-doh-geometry)=
 ### 4.3 Sizes from `int(3 * sigma)`
 
 scikit-image takes `size = int(3 * sigma)` and `lobe = size // 3`. SURF needs
@@ -505,6 +565,87 @@ show_table(pd.DataFrame({
     "SURF size": [int(3 * s) % 3 == 0 and (int(3 * s) // 3) % 2 == 1
                   for s in default_sigmas]}), floatfmt=".4g")
 ```
+
+#### Symmetry is not enough
+
+`on_blob_dog.md` §5 tests the filters for symmetry. The middle box of width
+`size` starts at `c - s2`, so it is centred on the output pixel only when
+`size` is odd. The inner box of width `lobe` starts at `c - lobe // 2`, so it is
+centred only when `lobe` is odd. It concludes that the usable sizes are the odd
+sizes with an odd lobe: 3, 5, 9, 11, 15, 17, …, "odd and not 1 mod 6".
+
+The symmetry argument is correct, but a symmetric filter is not always a
+second-derivative filter. Measure both properties for every `size` from 3 to
+24: the asymmetry of the response to a symmetric Gaussian blob, with and
+without the one-pixel shift, and the response of `dxx` to a constant image:
+
+```{code-cell} ipython3
+blob_n = 121
+br, bc = np.indices((blob_n, blob_n)) - blob_n // 2
+sym_blob = np.exp(-(br**2 + bc**2) / (2 * 6.0**2))
+
+
+def asymmetry_of(layout):
+    """Largest change under a 180° rotation about the blob centre, over the maximum."""
+    D = det_from(sym_blob, layout)
+    return np.abs(D - D[::-1, ::-1]).max() / np.abs(D).max()
+
+
+rows = []
+for size in range(3, 25):
+    sigma = size / 3 + 1e-9  # so that int(3 * sigma) == size
+    lobe = size // 3
+    rows.append({"size": size, "size mod 6": size % 6, "lobe": lobe,
+                 "asymmetry, current": asymmetry_of(skimage_layout(sigma)),
+                 "asymmetry, shift removed": asymmetry_of(skimage_layout(sigma, shift=0)),
+                 "dxx response to a constant":
+                     abs(apply(np.ones((41, 41)), skimage_layout(sigma)[2])[20, 20]),
+                 "SURF size": size == 3 * lobe and lobe % 2 == 1})
+geometry = pd.DataFrame(rows)
+show_table(geometry, floatfmt=".2g")
+```
+
+With the shift, no size is symmetric. Without it, the response is symmetric
+for every odd `size` with an odd `lobe`, as `on_blob_dog.md` says, and not
+symmetric for the others. But the sizes 5, 11, 17 and 23, with `size mod 6`
+equal to 5, have a middle box two pixels wider than $3L$. Their weights do not
+sum to zero, so they respond to a constant image:
+
+```{code-cell} ipython3
+symmetric = geometry["asymmetry, shift removed"] < 1e-9
+zero_sum = geometry["dxx response to a constant"] < 1e-12
+print("symmetric sizes:        ", geometry["size"][symmetric].tolist())
+print("symmetric and zero-sum: ", geometry["size"][symmetric & zero_sum].tolist())
+print("SURF sizes:             ", geometry["size"][geometry["SURF size"]].tolist())
+```
+
+The filter is a second-derivative filter only at the SURF sizes $3L$ with $L$
+odd. The rows of `dxx` through the output pixel, without the shift, show the
+three cases:
+
+```{code-cell} ipython3
+fig, axes = plt.subplots(1, 4, figsize=(9.5, 2.4), sharey=True,
+                         constrained_layout=True)
+for ax, size in zip(axes, (8, 7, 11, 9)):
+    K = kernel(skimage_layout(size / 3 + 1e-9, shift=0)[2], n=31)
+    row = K[15] * size**2
+    x = np.arange(31) - 15
+    keep = np.abs(x) <= 8
+    ax.bar(x[keep], -row[keep], width=0.85, color=COLOURS["current"])
+    ax.axvline(0, color=INK, lw=0.8, ls=":")
+    ax.axhline(0, color=GRID, lw=0.8)
+    ax.set_title(f"size {size}, lobe {size // 3}: sum {-row.sum() + 0:+.0f}")
+    ax.set_xticks([-8, -4, 0, 4, 8])
+axes[0].set_ylabel("weight × size²")
+fig.suptitle("Middle row of dxx, shift removed, signs as in SURF. "
+             "Dotted line: output pixel.",
+             color=MUTED, fontsize=9)
+plt.show()
+```
+
+At `size` 8 and 7 the row is not symmetric about the output pixel. At `size`
+11 it is symmetric, but its weights sum to $+2$ per row: it is a smoothing
+filter plus a second-derivative filter. At `size` 9 it is the SURF filter.
 
 ### 4.4 The response across `sigma`
 
@@ -593,38 +734,122 @@ zero. `hessian_matrix_det` is a public function with no check on the sign of
 its input, and `blob_doh(..., prescale='none')` passes a float image through
 unchanged.
 
+(sec-doh-border)=
 ### 4.6 The border
 
-At the border, `_integ` moves each box corner to the nearest pixel of the
-integral image. A box that starts above row 0 then starts at integral row 0,
-which leaves out image row 0. OpenSURF treats the image as zero outside.
-Compare the current code with its own transcription, which counts zeros
-outside (`box_sums`), by distance from the edge:
+`_integ` clips the top-left corner of each box to the image first, and then
+adds the extent to the clipped corner:
 
-```{code-cell} ipython3
-sigma = 3
-ours = det_from(noise, skimage_layout(sigma))
-theirs = hessian_matrix_det(noise, sigma)
-distance = np.minimum.reduce(np.indices(noise.shape).tolist()
-                             + (np.array(noise.shape)[:, None, None] - 1
-                                - np.indices(noise.shape)).tolist())
-scale = np.abs(theirs).max()
-show_table(pd.DataFrame([{"distance from edge": d,
-                          "max difference / max value":
-                              np.abs(ours - theirs)[distance == d].max() / scale}
-                         for d in range(8)]), floatfmt=".2g")
+```python
+r = _clip(r, 0, img.shape[0] - 1)
+r2 = _clip(r + rl, 0, img.shape[0] - 1)
 ```
 
-The difference is non-zero only within `lobe + 1` pixels of the edge. This is
-a defect of the same origin as §4.2. It changes only pixels near the edge.
+A request for corner row `r` and `rl` rows asks for image rows `r + 1` to
+`r + rl` (§4.2). The table follows that request near the top and the bottom of
+an image of 8 rows, for `rl = 4`:
+
+```{code-cell} ipython3
+def rows_summed(r, rl, height):
+    """Image rows that `_integ` sums for corner row `r` and extent `rl`."""
+    r1 = min(max(r, 0), height - 1)
+    r2 = min(max(r1 + rl, 0), height - 1)
+    return list(range(r1 + 1, r2 + 1))
+
+
+height, rl = 8, 4
+show_table(pd.DataFrame([
+    {"corner row r": r,
+     "rows asked for, in the image": [x for x in range(r + 1, r + rl + 1)
+                                      if 0 <= x < height],
+     "rows summed": rows_summed(r, rl, height)}
+    for r in (-4, -3, -2, -1, 0, 3, 4, 5, 6, 7)]))
+```
+
+Two different things happen at the two ends:
+
+* at the top (and left), a box that starts above the image keeps its full
+  extent and slides down, to start at row 1. Row 0 is never summed. The sum is
+  over rows the filter did not ask for;
+* at the bottom (and right), a box that runs past the image stops at the last
+  row. It sums exactly the rows of the request that are inside the image, so
+  it gives the response for an image that is zero outside.
+
+`on_blob_dog.md` §8 describes the slide and the shrink. It also says that the
+shrunk box "no longer matches the area actually summed", and that neither edge
+gives "what any `mode` would give". The second half of the table shows that
+the bottom and right edges give zero padding, the rule of `mode='constant'`.
+Measure it on `camera` at half size, against `skimage_layout`, which has the
+same shift and counts zeros outside:
+
+```{code-cell} ipython3
+photo = ski.util.img_as_float(ski.data.camera())[::2, ::2]
+rows = []
+for sigma in (2, 3, 4, 8, 16):
+    band = int(3 * sigma) + 2
+    current = current_det(photo, sigma)
+    zero_padded = det_from(photo, skimage_layout(sigma))
+    p = band + 2
+    edge_padded = det_from(np.pad(photo, p, mode="edge"),
+                           skimage_layout(sigma))[p:-p, p:-p]
+    scale = np.abs(current[band:-band, band:-band]).max()
+    diff_zero = np.abs(current - zero_padded) / scale
+    diff_edge = np.abs(current - edge_padded) / scale
+    inner = (slice(band, None), slice(band, None))  # away from the top and left
+    rows.append({"sigma": sigma, "band": band,
+                 "vs zero outside, top and left": max(diff_zero[:band].max(),
+                                                      diff_zero[:, :band].max()),
+                 "vs zero outside, bottom and right": diff_zero[inner].max(),
+                 "vs edge padding, bottom and right": diff_edge[inner].max()})
+show_table(pd.DataFrame(rows), floatfmt=".2g")
+```
+
+The values are the largest difference over the largest interior value. At the
+bottom and right the current code is zero padding to rounding. At the top and
+left it differs from zero padding by 35% to 130% of the interior maximum. Against edge padding, the reference of `on_blob_dog.md` §8, the bottom
+and right also differ, because zero padding is not edge padding. So the defect
+is at the top and left only, and it comes from the order of the two `_clip`
+calls, as the shift of §4.2 comes from the missing subtraction of one.
 
 SURF does not define a value at the border. OpenSURF sets "a border for each
 octave such that the largest filter in the octave remains entirely over the
 image", because "edge effects can yield anomolous results"
 [@evans2009notes_opensurf, §1.5.2]. dlib does the same (§8). `hessian_matrix_det`
-returns a value at every pixel, so it must choose a border rule. Zero outside
-the image, as in `box_sums`, is the rule of OpenSURF's `BoxIntegral` and of
-`hessian_matrix(..., mode='constant')`.
+returns a value at every pixel, so it must choose a border rule. Two fixes
+give a consistent rule:
+
+* zero outside the image, as OpenSURF's `BoxIntegral` does: §9.1 changes
+  `_integ` to do this, at no extra cost;
+* pad the image once under a chosen `mode`, run the box filters, and crop, as
+  `on_blob_dog.md` §8 proposes. This offers every `mode` of `hessian_matrix`.
+  The pad must cover the reach of the filter, `size - (size - 1) // 2` pixels
+  for the current layout, plus one for the shift of §4.2. Its cost, with the installed code on the 256 × 256
+  image:
+
+```{code-cell} ipython3
+def reach(sigma):
+    """Pixels the current filter reaches past the output pixel."""
+    size = int(3 * sigma)
+    return size - (size - 1) // 2 + 1
+
+
+def pad_once(image, sigma, mode="edge"):
+    """Approximate determinant with one boundary extension, then crop."""
+    p = reach(sigma)
+    return hessian_matrix_det(np.pad(image, p, mode=mode), sigma)[p:-p, p:-p]
+
+
+rows = []
+for sigma in (2, 4, 8, 16):
+    t_now = best_time(lambda: hessian_matrix_det(photo, sigma))
+    t_pad = best_time(lambda: pad_once(photo, sigma))
+    rows.append({"sigma": sigma, "pad": reach(sigma), "current, ms": t_now,
+                 "pad once, ms": t_pad, "ratio": t_pad / t_now})
+show_table(pd.DataFrame(rows), floatfmt=".3g")
+```
+
+The pad costs extra in proportion to the padded area, which grows with
+`sigma`.
 
 ### 4.7 `sigma` below 1
 
@@ -639,6 +864,53 @@ with np.errstate(divide="ignore", invalid="ignore"), warnings.catch_warnings():
         print(f"sigma {sigma}: all finite {np.isfinite(D).all()}, "
               f"max |value| {np.nanmax(np.abs(D)):.1e}")
 ```
+
+(sec-doh-quantised)=
+### 4.8 The quantised scale axis
+
+`size = int(3 * sigma)` is the only use of `sigma`, so `sigma` values with the
+same `size` give the same output:
+
+```{code-cell} ipython3
+base = hessian_matrix_det(photo, 3.0)
+show_table(pd.DataFrame([
+    {"sigma": sigma, "size": int(3 * sigma),
+     "same output as sigma 3": bool(np.array_equal(hessian_matrix_det(photo, sigma), base))}
+    for sigma in (3.0, 3.2, 3.32, 3.34, 3.67, 4.0)]))
+```
+
+`on_blob_dog.md` §6 concludes that a `num_sigma` finer than steps of 1/3
+"buys duplicate work and nothing else". It does more than that. `blob_doh`
+finds peaks with `peak_local_max`, which keeps a pixel that equals the maximum
+of its 3 × 3 × 3 neighbourhood, so a tie counts as a peak. Where two adjacent
+scale planes are identical and the response falls with scale, the second of
+the two ties with its neighbour and is higher than the plane beyond it, so it
+is a peak. The disk of §3 at three values of `num_sigma`:
+
+```{code-cell} ipython3
+rows = []
+for num_sigma in (10, 28, 85):
+    sigmas = np.linspace(2, 30, num_sigma)
+    sizes_used = [int(3 * s) for s in sigmas]
+    cube = np.stack([hessian_matrix_det(one_disk, s) for s in sigmas], axis=-1)
+    column = cube[CENTRE - 1, CENTRE - 1]
+    ball = ndi.maximum_filter(cube, size=3, mode="constant", cval=-np.inf)
+    peaks = np.flatnonzero((cube == ball)[CENTRE - 1, CENTRE - 1] & (column > 0.005))
+    found = blob_doh(one_disk, min_sigma=2, max_sigma=30, num_sigma=num_sigma,
+                     threshold=0.005)
+    rows.append({"num_sigma": num_sigma,
+                 "duplicate planes": num_sigma - len(set(sizes_used)),
+                 "scale peaks at the centre (sigma)": [round(float(sigmas[k]), 2) for k in peaks],
+                 "blob_doh sigma": [round(float(b[2]), 2) for b in found]})
+show_table(pd.DataFrame(rows))
+```
+
+With no duplicate planes there is one scale peak at the disk centre, near the
+radius 10. With 9 duplicate planes there are 15, from `sigma` 2.67 to 20.67.
+`blob_doh` removes the smaller of two overlapping blobs, so it reports the
+largest of them. A fine `num_sigma` therefore changes the answer. Any fix that
+quantises the scale more coarsely, as §9.1 does, makes this worse unless
+`blob_doh` removes duplicate planes (§9.1).
 
 ## 5. Side by side on the disk
 
@@ -759,6 +1031,118 @@ defect. This agrees with Bay and colleagues, for whom a constant weight "did
 not have a significant impact on the results in our experiments"
 [@bay2008speededup_robust, §3.2].
 
+(sec-doh-scale)=
+### 6.2 Scale selection on blobs and disks
+
+`blob_doh` takes the `sigma` at which the response peaks over scale as the
+blob size. `on_blob_dog.md` §7 compares that choice with the exact
+scale-normalised determinant, $\sigma^4 \det H$, on Gaussian blobs, and finds
+that the box route "reads high". For a Gaussian blob of standard deviation
+$w$, the exact determinant with $\gamma = 1$ peaks at $\sigma = w$
+[@lindeberg1998feature_detection]. The exact route here uses the
+moment-corrected Gaussian-derivative kernels of `on_hessian_matrix_det.md`
+§2. The table gives the `sigma` of the largest response at the blob centre,
+on a grid of step 0.25, for Gaussian blobs and for disks:
+
+```{code-cell} ipython3
+def taps(sigma, order, truncate=8):
+    """Moment-corrected 1-D Gaussian derivative kernel (on_hessian_matrix_det.md §2)."""
+    radius = int(truncate * sigma + 0.5)
+    x = np.arange(-radius, radius + 1, dtype=float)
+    g = np.exp(-(x**2) / (2 * sigma**2))
+    g /= g.sum()
+    if order == 0:
+        return g
+    if order == 1:
+        k = g * (x / sigma**2)
+        return k / (k * x).sum()
+    k = g * ((x**2 - sigma**2) / sigma**4)
+    k = k - k.sum() * g
+    return k / ((k * x**2).sum() / 2)
+
+
+def exact_centre(image, sigma, centre):
+    """sigma^4 det H at `centre` only, with Gaussian-derivative kernels, zero outside."""
+    t = {o: taps(sigma, o) for o in (0, 1, 2)}
+    h = len(t[0]) // 2
+    padded = np.pad(image, h)
+    window = padded[centre[0]:centre[0] + 2 * h + 1, centre[1]:centre[1] + 2 * h + 1]
+
+    def element(a, b):
+        return t[a] @ window @ t[b]
+
+    return sigma**4 * (element(2, 0) * element(0, 2) - element(1, 1) ** 2)
+
+
+def lobe_for_gaussian(sigma):
+    """Odd lobe nearest sigma / 0.55: the §9.2 alternative."""
+    return 2 * int(sigma / 0.55 / 2) + 1
+
+
+M = 201
+mr, mcol = np.indices((M, M)) - M // 2
+rows = []
+for kind, size_ in (("Gaussian", 1.5), ("Gaussian", 3), ("Gaussian", 5), ("Gaussian", 8),
+                    ("disk", 4), ("disk", 10), ("disk", 16), ("disk", 24)):
+    if kind == "Gaussian":
+        image = np.exp(-(mr**2 + mcol**2) / (2 * size_**2))
+    else:
+        image = ((mr**2 + mcol**2) <= size_**2).astype(float)
+    sig = np.arange(1, 3 * size_ + 2.01, 0.25)
+    centre = (M // 2, M // 2)
+    shifted_centre = (M // 2 - 1, M // 2 - 1)  # where the current code puts it
+    pick = lambda values: float(sig[int(np.argmax(values))])
+    rows.append({
+        "blob": f"{kind} {size_}",
+        "exact": pick([exact_centre(image, s, centre) for s in sig]),
+        "current": pick([current_det(image, s)[shifted_centre] for s in sig]),
+        "fixed, lobe near sigma": pick([surf_det(image, s)[centre] for s in sig]),
+        "fixed, lobe near sigma/0.55": pick(
+            [det_from(image, surf_layout(lobe_for_gaussian(s)))[centre] for s in sig]),
+    })
+show_table(pd.DataFrame(rows), floatfmt=".3g")
+```
+
+The "fixed" columns change in steps, because the lobe does; the table gives
+the first `sigma` of the best step. Three results:
+
+* The exact determinant picks $\sigma = w$ for the Gaussian blobs, and about
+  $0.7 R$ for a disk of radius $R$.
+* The current code and the fixed code with the lobe near `sigma` pick a
+  larger `sigma` than the exact determinant, on both kinds of blob: 1.3 to 2
+  times $w$ on the Gaussian blobs. This is the "reads high" of
+  `on_blob_dog.md` §7. The lobe near `sigma` matches a Gaussian of about
+  $0.55\,\sigma$ on photographs (§6), so `sigma` is larger than the Gaussian
+  scale it stands for. With the lobe near $\sigma / 0.55$ the choice falls to
+  0.75 to 0.9 times $w$, below the exact value.
+* On disks, the fixed code with the lobe near `sigma` picks $\sigma = R$, the
+  `blob_doh` docstring relation "radius ≈ `sigma`". The current code picks
+  $R + 1$.
+
+The best lobe for a disk, with the response interpolated between lobes by a
+parabola, as SURF does for its scale [@bay2008speededup_robust, §3.4]:
+
+```{code-cell} ipython3
+lobes = np.arange(1, 41, 2)
+rows = []
+for radius in (6, 10, 16, 24):
+    image = ((mr**2 + mcol**2) <= radius**2).astype(float)
+    response = np.array([det_from(image, surf_layout(L))[M // 2, M // 2] for L in lobes])
+    k = int(np.argmax(response))
+    y0, y1, y2 = response[k - 1:k + 2]
+    rows.append({"radius": radius, "best odd lobe": int(lobes[k]),
+                 "interpolated lobe": lobes[k] + (y0 - y2) / (y0 - 2 * y1 + y2)})
+show_table(pd.DataFrame(rows), floatfmt=".3g")
+```
+
+The interpolated best lobe is the radius plus 1.4 to 1.6 pixels. So on disks
+the fixed filters report a radius that is high by about 1.5 pixels, which is
+25% at radius 6 and 6% at radius 24. `on_blob_dog.md` D3 proposes to
+"recalibrate the constant" in `size = int(3 * sigma)`. A new constant scales
+`sigma`; it does not remove an offset of constant size. Which constant is
+right depends on what `sigma` is to mean (§9.2): a disk radius, or the
+standard deviation of an equivalent Gaussian.
+
 ## 7. Properties that ought to hold
 
 Five promises for a determinant of the Hessian at one scale. The test image
@@ -807,6 +1191,7 @@ centred and symmetric at none of the `sigma`. It passes the constant test at
 the integer `sigma`, where `size` is a multiple of 3, and the ramp test only
 at the SURF sizes. The fixed code keeps all five at every `sigma`.
 
+(sec-doh-comparators)=
 ## 8. Comparators
 
 Four other implementations of the SURF determinant, read from their source:
@@ -883,6 +1268,7 @@ all boxes. This is a property of OpenCV, not of scikit-image.
 
 ## 9. Ways forward
 
+(sec-doh-fix)=
 ### 9.1 The fix
 
 The fix changes three things in `_hessian_det_appx_pythran.py`:
@@ -952,6 +1338,33 @@ The loop does the same number of look-ups per pixel as the current code, plus
 four comparisons in each `_integ_fixed`. This notebook does not build the
 Pythran module, so it does not time the fix.
 
+The odd lobes make the scale axis coarser: a step of 2 in `sigma` per lobe.
+`blob_doh` must therefore compute each lobe once and report the lobe as the
+scale, or duplicate planes give false scale peaks (§4.8). As a function, with
+the steps of `blob_doh` otherwise unchanged:
+
+```{code-cell} ipython3
+from skimage.feature import peak_local_max
+
+
+def blob_doh_lobes(image, min_sigma=1, max_sigma=30, num_sigma=10,
+                   threshold=0.01, overlap=0.5):
+    """`blob_doh` with the fixed filters, one plane per distinct lobe."""
+    sigmas = np.linspace(min_sigma, max_sigma, num_sigma)
+    lobes = np.unique([lobe_for(s) for s in sigmas])
+    cube = np.stack([det_from(image, surf_layout(L)) for L in lobes], axis=-1)
+    peaks = peak_local_max(cube, threshold_abs=threshold, exclude_border=False,
+                           footprint=np.ones((3, 3, 3)))
+    if peaks.size == 0:
+        return np.empty((0, 3))
+    peaks = peaks.astype(float)
+    peaks[:, -1] = lobes[peaks[:, -1].astype(int)]
+    return blob_module._prune_blobs(peaks, overlap)
+```
+
+§10.3 tests it.
+
+(sec-doh-sigma)=
 ### 9.2 What `sigma` means
 
 The fixed filters match a Gaussian determinant at about $0.55\,L$ (§6), so
@@ -1163,7 +1576,44 @@ here are 8 of the 10 `sigma` of `blob_doh` (§4.3). It finds 18 blobs instead
 of 17, keeps the `sigma` of 11 of the 17, and moves blob centres by up to 4.1
 pixels.
 
-### 10.3 Other costs
+(sec-doh-discs)=
+### 10.3 The disks of `on_blob_dog.md`
+
+`on_blob_dog.md` §3 reports radii 5% to 33% too large for four disks, with
+`num_sigma=30` from 2 to 30, and §5 reports every centre at (−1, −1). The
+same image, with the routes of §9.1. "Fixed, all planes" puts `surf_det` into
+`blob_doh` unchanged; "fixed, one plane per lobe" is `blob_doh_lobes`:
+
+```{code-cell} ipython3
+DISCS = [(80, 80, 6), (80, 220, 10), (220, 80, 16), (220, 260, 24)]
+discs = np.zeros((400, 400))
+for r0, c0, radius in DISCS:
+    discs[disk(400, radius, (r0, c0)) > 0] = 1.0
+settings = dict(min_sigma=2, max_sigma=30, num_sigma=30, threshold=0.005)
+routes = {
+    "current": run_blob_doh(None, discs, **settings),
+    "shift fix only": run_blob_doh(shift_only, discs, **settings),
+    "fixed, all planes": run_blob_doh(surf_det, discs, **settings),
+    "fixed, one plane per lobe": blob_doh_lobes(discs, **settings),
+}
+rows = []
+for name, blobs in routes.items():
+    for r0, c0, radius in DISCS:
+        b = blobs[np.argmin(np.hypot(blobs[:, 0] - r0, blobs[:, 1] - c0))]
+        rows.append({"route": name, "radius": radius,
+                     "offset": (int(b[0] - r0), int(b[1] - c0)),
+                     "sigma": round(float(b[2]), 2),
+                     "sigma / radius - 1": f"{b[2] / radius - 1:+.0%}"})
+show_table(pd.DataFrame(rows))
+```
+
+The shift fix puts every centre right and leaves the radii as they were. With
+all planes, the fixed filters give much larger `sigma` than the radius,
+because of the false scale peaks of §4.8. With one plane per lobe, every
+centre is right and the reported `sigma` is the odd lobe just above the
+radius.
+
+### 10.4 Other costs
 
 * `hessian_matrix_det(..., approximate=True)` changes at every pixel. At the
   SURF sizes the values move by one pixel; at other sizes the values change.
@@ -1183,10 +1633,15 @@ pixels.
   On this corpus the filters match $0.55\,L$ better (§6).
 * **Do not change the 0.81 weight.** The best weight is close to it, and the
   gain in accuracy is small (§6.1).
+* **Do not quantise the scale without removing duplicate planes.** Identical
+  planes make false scale peaks in `blob_doh` (§4.8, §10.3).
+* **Do not take "odd size and odd lobe" as the condition for a valid filter.**
+  Sizes 5, 11, 17 and 23 meet it, and respond to a constant image (§4.3).
 * **Do not fix only the border or the clamp.** The shift and the non-SURF
   sizes change every interior pixel; the border defect changes only a band
   of `lobe + 1` pixels.
 
+(sec-doh-summary)=
 ## 12. Summary
 
 | defect | where | effect | measured in |
@@ -1196,15 +1651,33 @@ pixels.
 | normalisation $1/\text{size}^2$ at non-SURF sizes | `_hessian_matrix_det` | saw-tooth response over `sigma`; several local maxima for one disk | §4.4 |
 | `size += 1` after use | `_hessian_matrix_det` | no effect; dead code | §4.3 |
 | `max(0.0, ans)` clamp | `_integ`, from OpenSURF | wrong or zero output for images with negative values | §4.5 |
-| corners moved into the image | `_integ` | leaves out row 0 and column 0 near the edge | §4.6 |
+| corner clipped before the extent is added | `_integ` | at the top and left, boxes slide inward and row 0 and column 0 are never summed; the bottom and right are zero padding | §4.6 |
+| identical scale planes | `blob_doh` with a fine `num_sigma`; any coarser quantisation | false scale peaks; `blob_doh` reports too large a `sigma` | §4.8, §10.3 |
 | `sigma < 1` | `_hessian_matrix_det` | zeros; NaN below 1/3 | §4.7 |
-| `sigma` called a Gaussian standard deviation | docstrings | the filters match a Gaussian of about $0.55\,\sigma$; SURF states $0.4\,L$ | §4.1, §6, §9.2 |
+| `sigma` called a Gaussian standard deviation | docstrings | the filters match a Gaussian of about $0.55\,\sigma$; SURF states $0.4\,L$; scale selection picks a larger `sigma` than the exact determinant | §4.1, §6, §6.2, §9.2 |
 
-The fix of §9.1 removes all but the last, which is a decision about the
-meaning of `sigma`.
+The fix of §9.1, with one plane per lobe in `blob_doh`, removes all but the
+last, which is a decision about the meaning of `sigma`.
 
 Separately, the current code is a close translation of GPL-licensed OpenSURF
 code, with no attribution and no record of a licence check (§9.3).
+
+(sec-doh-blob-dog)=
+### 12.1 The conclusions of `on_blob_dog.md`
+
+| `on_blob_dog.md` (version `7e3b2b2`) | conclusion | verdict | here |
+| --- | --- | --- | --- |
+| §5, D1 | every blob one pixel up and left; `_integ` sums one pixel down and right of the corner it names | holds | §4.2, §10.1, §10.3 |
+| §5, D2 | the dead `size += 1`; filters off-centre at even `size` and at `size` 1 mod 6 | holds | §4.3 |
+| §5, D2 fix | use odd sizes that are not 1 mod 6: 3, 5, 9, 11, … | does not hold: sizes 5, 11, 17, 23 respond to a constant; only $3L$ with $L$ odd is valid | §4.3 |
+| §6 | `sigma` with the same `int(3 * sigma)` give identical planes; nothing below `sigma` 1 | holds; NaN below 1/3 | §4.7, §4.8 |
+| §6, §12 | a fine `num_sigma` "buys duplicate work and nothing else" | does not hold: duplicate planes make false scale peaks | §4.8 |
+| §7, D3 | the box route picks too large a scale; recalibrate the constant | the bias holds; on disks the fixed filters give radius + 1.5 px, an offset that no constant removes; the constant is the choice of §9.2 | §6.2, §9.2 |
+| §8, D4 | at the border, boxes slide at the top and left and shrink at the bottom and right | holds | §4.6 |
+| §8, D4 | the shrunk box is mis-normalised; neither edge matches any `mode` | does not hold: the bottom and right are zero padding, `mode='constant'` | §4.6 |
+| §8, D4 fix | pad once under a `mode`, then crop | holds, as one of two fixes | §4.6, §9.1 |
+| §9, §12 | exact Gaussian kernels would fix the defects but lose the flat cost | holds; `on_hessian_matrix_det.md` §8 measures the cost | §11 |
+| §12 | D1 to D4 are independent and can go in any order | D1 and D4 are independent; D2 and D3 are one decision, and D2 needs the duplicate-plane fix | §9.1, §10.3 |
 
 ### Limits
 
