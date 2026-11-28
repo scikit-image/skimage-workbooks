@@ -7,6 +7,11 @@ kernelspec:
   name: python3
 ---
 
+:::{changelog}
+2026-11-28 | opencode:grok-4.7 | Create workbook: the formula, its accuracy, and the timings
+2026-11-28 | opencode:deepseek-v4.1-flash-free | Add the range of formula differences on three photographs
+:::
+
 `hessian_matrix_det` builds a full matrix at every pixel and calls
 `np.linalg.det`, except on a 2D image when `approximate=True`. The Hessian is
 symmetric. In 2D and 3D the determinant is a short polynomial in the unique
@@ -19,9 +24,9 @@ the order of `combinations_with_replacement`: `[Hrr, Hrc, Hcc]` in 2D, and
 routes that produce a determinant image. It does not time a 3D formula. This
 notebook starts from the Hessian elements.
 
-The function was read in `hessian-refactor/src/_skimage2/feature/corner.py`.
-There is no `hessian-matrix` worktree in this checkout. The cells call the
-installed copy.
+The source read for the formula is
+`hessian-refactor/src/_skimage2/feature/corner.py` at `060a313d1`. The cells
+call the installed copy, which is the unmodified function.
 
 ## 1. Setup
 
@@ -745,7 +750,164 @@ $D_{xx} D_{yy} - 0.81 D_{xy}^{2}$ on an integral image.
 `on_hessian_matrix_det.md` and `on_hessian_det_approx.md` measure it. It is not
 a shortcut for `np.linalg.det`.
 
-## 11. Summary
+## 11. The range on three photographs
+
+The closed form and `np.linalg.det` run on the same finite-difference Hessian.
+The difference is the closed form minus `np.linalg.det`. The peak is the
+largest absolute value of the closed form for that image and `sigma`. The
+interior leaves out a border of width $\lfloor 8\sigma + 0.5 \rfloor + 1$, the
+reach of an 8-sigma kernel. The photographs are `camera`, `coins`, and
+greyscale `astronaut`. `sigma` is 1, 2, 4 and 8.
+
+```{code-cell} ipython3
+def formula_gap(image, sigma):
+    """Closed form, its difference from `np.linalg.det`, and the interior mask."""
+    elems = hessian_matrix(image, sigma=sigma, use_gaussian_derivatives=False)
+    closed = np.asarray(closed_det(elems), dtype=np.float64)
+    linear = np.linalg.det(_symmetric_image(elems))
+    diff = closed - linear
+    reach = int(8 * sigma + 0.5) + 1
+    inner = np.zeros(image.shape, dtype=bool)
+    inner[reach:-reach, reach:-reach] = True
+    return closed, diff, inner
+
+
+PHOTO_SIGMAS = (1, 2, 4, 8)
+photographs = {
+    "camera": ski.util.img_as_float(ski.data.camera()),
+    "coins": ski.util.img_as_float(ski.data.coins()),
+    "astronaut": ski.util.img_as_float(ski.color.rgb2gray(ski.data.astronaut())),
+}
+print({name: image.shape for name, image in photographs.items()})
+```
+
+```{code-cell} ipython3
+photo_rows = []
+for name, image in photographs.items():
+    for sigma in PHOTO_SIGMAS:
+        closed, diff, inner = formula_gap(image, sigma)
+        peak = np.max(np.abs(closed))
+        space = np.spacing(np.where(closed == 0, np.finfo(float).tiny, closed))
+        ulps = np.abs(diff) / space
+        for region, sel in (("interior", inner), ("border", ~inner)):
+            dd, uu, cc = diff[sel], ulps[sel], closed[sel]
+            above_1e6 = np.abs(cc) > 1e-6 * peak
+            above_1e3 = np.abs(cc) > 1e-3 * peak
+            photo_rows.append({
+                "image": name,
+                "sigma": sigma,
+                "region": region,
+                "min diff": dd.min(),
+                "max diff": dd.max(),
+                "max abs diff": np.max(np.abs(dd)),
+                "max abs diff / peak": np.max(np.abs(dd)) / peak,
+                "fraction differing": np.mean(dd != 0),
+                "p99 ulps": np.percentile(uu, 99),
+                "max ulps": uu.max(),
+                "max ulps, abs det > 1e-6 peak": uu[above_1e6].max(),
+                "max ulps, abs det > 1e-3 peak": uu[above_1e3].max(),
+            })
+photo_gaps = pd.DataFrame(photo_rows)
+interior_gaps = photo_gaps[photo_gaps.region == "interior"]
+show_table(
+    interior_gaps[["image", "sigma", "min diff", "max diff",
+                   "max abs diff", "max abs diff / peak", "fraction differing"]],
+    floatfmt=".3e",
+)
+```
+
+```{code-cell} ipython3
+span = interior_gaps.assign(abs_span=interior_gaps["max diff"] - interior_gaps["min diff"])
+widest = span.loc[span.abs_span.idxmax()]
+narrowest = span.loc[span.abs_span.idxmin()]
+rel = interior_gaps["max abs diff / peak"]
+print("widest signed span:", widest["image"], "sigma", int(widest["sigma"]),
+      f"{widest['min diff']:.3e}", "to", f"{widest['max diff']:.3e}")
+print("narrowest signed span:", narrowest["image"], "sigma", int(narrowest["sigma"]),
+      f"{narrowest['min diff']:.3e}", "to", f"{narrowest['max diff']:.3e}")
+print("interior max abs diff / peak, over 3 images and 4 sigmas:",
+      f"{rel.min():.3e}", "to", f"{rel.max():.3e}")
+print("fraction differing, interior:",
+      f"{interior_gaps['fraction differing'].min():.3f}",
+      "to", f"{interior_gaps['fraction differing'].max():.3f}")
+print("every interior row has a negative minimum and a positive maximum:",
+      bool(np.all(interior_gaps["min diff"] < 0)
+           and np.all(interior_gaps["max diff"] > 0)))
+growth = interior_gaps.groupby("image")["max abs diff / peak"].agg(
+    lambda s: s.iloc[-1] / s.iloc[0])
+spread = interior_gaps.groupby("sigma")["max abs diff / peak"].agg(
+    lambda s: s.max() / s.min())
+print("growth, sigma 1 to 8, per image:", f"{growth.min():.2f}", "to",
+      f"{growth.max():.2f}")
+print("largest / smallest image at fixed sigma:", f"{spread.min():.2f}", "to",
+      f"{spread.max():.2f}")
+```
+
+Every interior row has a negative minimum and a positive maximum, so the
+signed difference changes sign on each image and each `sigma`. The widest
+and narrowest spans are the first two lines. The third line is the range of
+the largest gap relative to the peak. The fourth is the rise from `sigma` 1
+to `sigma` 8 on each image, and the fifth is the ratio between the largest
+and smallest image at a fixed `sigma`.
+
+```{code-cell} ipython3
+show_table(
+    interior_gaps[["image", "sigma", "p99 ulps", "max ulps",
+                   "max ulps, abs det > 1e-6 peak",
+                   "max ulps, abs det > 1e-3 peak"]],
+    floatfmt=".3g",
+)
+```
+
+An ulp here is $|D_{\mathrm{closed}} - D_{\mathrm{linalg}}|$ divided by the
+spacing of the closed-form value. The 99th percentile is the `p99 ulps`
+column: 13 to 22 ulps. The unrestricted maximum reaches $1.3 \times 10^5$
+ulps, at pixels where the determinant is close to zero. The last two columns
+keep only pixels whose absolute determinant exceeds $10^{-6}$ and $10^{-3}$ of
+the peak. At $10^{-6}$ of the peak the maximum is still as large as
+$2.3 \times 10^4$ ulps; at $10^{-3}$ of the peak it falls to 58 to 319 ulps.
+
+```{code-cell} ipython3
+border_rel = photo_gaps[photo_gaps.region == "border"]["max abs diff / peak"]
+print("border max abs diff / peak:", f"{border_rel.min():.3e}", "to",
+      f"{border_rel.max():.3e}")
+print("border maximum / interior maximum:", f"{border_rel.max() / rel.max():.3f}")
+```
+
+The border does not widen the range much. Its largest gap relative to the peak
+is $1.7 \times 10^{-16}$ to $1.5 \times 10^{-15}$, and its overall maximum is
+within a few percent of the interior maximum.
+
+```{code-cell} ipython3
+# Same three colours as COLOURS, one image each. validate_palette.js, light
+# mode, as recorded in §1: all checks pass; worst adjacent CVD ΔE 11.8;
+# contrast WARN, so the lines are labelled.
+IMAGE_COLOURS = {
+    "camera": COLOURS["current"],
+    "coins": COLOURS["closed form"],
+    "astronaut": COLOURS["assemble"],
+}
+fig, ax = plt.subplots(figsize=(6.2, 3.2), constrained_layout=True)
+for name, colour in IMAGE_COLOURS.items():
+    part = interior_gaps[interior_gaps.image == name]
+    ax.plot(part["sigma"], part["max abs diff / peak"], "o-", color=colour,
+            lw=2, ms=5, label=name)
+ax.legend(frameon=False, loc="upper left")
+ax.set_yscale("log")
+ax.set_xticks(PHOTO_SIGMAS, [str(s) for s in PHOTO_SIGMAS])
+ax.set_xlim(0.7, 11)
+ax.set_xlabel("sigma")
+ax.set_ylabel("max |difference| / peak")
+ax.set_title("interior")
+ax.grid(color=GRID, lw=0.6)
+plt.show()
+```
+
+The relative gap lies between $3.7 \times 10^{-16}$ and $1.5 \times 10^{-15}$.
+It rises by a factor of 2.5 to 3.5 from `sigma` 1 to `sigma` 8, and at a fixed
+`sigma` the three images are within a factor of two of each other.
+
+## 12. Summary
 
 ```{code-cell} ipython3
 summary = pd.DataFrame([
@@ -767,6 +929,8 @@ summary = pd.DataFrame([
      "result": f"{full_times.loc[full_times.order == 2, 'hessian_matrix_det / replacement'].iloc[0]:.3g}"},
     {"question": "full call, sigma 1, 64 cubed, ratio",
      "result": f"{full_times.loc[full_times.order == 3, 'hessian_matrix_det / replacement'].iloc[0]:.3g}"},
+    {"question": "three photographs, max abs diff / peak",
+     "result": f"{rel.min():.3g} to {rel.max():.3g}"},
 ])
 show_table(summary)
 ```
@@ -794,6 +958,9 @@ at `sigma` 1. The full call keeps the cost of `hessian_matrix`.
   the machine printed in §1. Sides are 128, 256, 512 and 1024 in 2D, and 32,
   48 and 64 in 3D. The full call is timed only at 512² and 64³, and only at
   `sigma` 1.
+* The photograph comparison is `camera`, `coins`, and greyscale `astronaut`,
+  at `sigma` 1, 2, 4 and 8. The Hessian is the finite-difference Hessian.
+  The two formulas are not compared on a 3D image.
 * There is no 4D formula here. Above 3D, `np.linalg.det` remains the path.
 * The installed scikit-image is the one printed in §1. The source that was
   read is `hessian-refactor` at `060a313d1`.

@@ -9,7 +9,6 @@ project:
   toc:
     - file: index.md
     - file: notebooks/on_surf_dlib_port.md
-    - file: notebook/on_hessian_det_timings.md
     - file: notebooks/on_pyramid_laplacian.md
     - file: notebooks/on_hessian.md
     - file: notebooks/on_hessian_filter.md
