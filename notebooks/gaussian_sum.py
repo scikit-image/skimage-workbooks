@@ -18,6 +18,15 @@ Because a level is a grid of separable functions, its least-squares fit splits
 into two 1-D problems, ``A_r @ A @ A_c.T ≈ residual`` [2], each solved by ridge
 (Tikhonov) least squares.
 
+The order of the fit has little effect. A joint fit puts the row bases of all
+levels side by side, then the column bases, and does the two solves once. Its
+amplitudes then include cross terms between widths, which are not isotropic.
+With the ridge set to give the same residual, the joint fit is about as good,
+but it has more than three times as many amplitudes. Repeating the
+coarse-to-fine pass, with each level refitted to the residual of all the
+others, does not change the residual. Coarse to fine keeps each level small
+and every term isotropic. See ``on_gaussian_sum_images.md``, §3.
+
 We use ridge least squares because neighbouring Gaussians, spaced ``δ`` apart
 with width ``δ``, overlap heavily. Without a penalty, the fit uses large
 amplitudes that nearly cancel. The ridge keeps the amplitudes small, at a
@@ -29,10 +38,9 @@ with width ``√(δ² + σ²)`` and amplitude ``a (δ / √(δ² + σ²))^n`` [1
 smoothed image and its derivatives have closed forms; `render` and `hessian`
 evaluate them without truncation.
 
-The code matches ``tests/skimage2/feature/test_hessian_metrics.py`` on the
-scikit-image ``hessian-refactor`` branch, with public names: `grid_centres`,
-`basis`, `ridge_solve` and `hessian` there are ``_grid_centres``, ``_basis``,
-``_ridge_solve`` and ``exact_hessian``.
+The code matches ``tests/gaussian_sum.py`` on the scikit-image
+``hessian-refactor`` branch, which the ``gaussian_sum_images`` fixture in
+``tests/conftest.py`` uses.
 
 References
 ----------

@@ -13,7 +13,7 @@ https://doi.org/10.1137/S0895479891222106 | Fausett & Fulton on Kronecker least 
 :::
 
 :::{changelog}
-2026-11-25 | claude-code:claude-opus-5-5 | Add an RMS test of the whole Hessian, split into gain and shape; describe the ridge fit; match `gaussian_sum.py` to the test file
+2026-11-28 | claude-code:claude-opus-5-5 | Add an RMS test of the whole Hessian, split into gain and shape; describe the ridge fit; compare joint and level-by-level fits; match `gaussian_sum.py` to the test file
 2026-11-25 | cursor:composer | Expand §3 on basis separability (isotropic factoring + product grid) vs dense amplitudes
 2026-11-25 | cursor:composer | Note that `test_hessian_schemes.py` asserts absolute Mobahi accuracy, not scheme comparisons
 2026-11-25 | cursor:composer | Create workbook; Mobahi smoothing identity; two-step lstsq amplitude fit (Fausett & Fulton)
@@ -226,6 +226,84 @@ bare(axes[0], "camera").imshow(PHOTOGRAPHS["camera"], cmap="gray", vmin=0, vmax=
 bare(axes[1], r"Mobahi RBF sum $f$").imshow(rendered, cmap="gray", vmin=0, vmax=1)
 bare(axes[2], "residual").imshow(residual, cmap="gray")
 ```
+
+### Why the levels are fitted one at a time
+
+The levels need not be fitted one at a time. A *joint* fit puts the row bases
+of all levels side by side, $R = [A_r^{(16)} \cdots A_r^{(1.5)}]$, and the
+column bases likewise in $C$, then does the same two ridge solves once for
+$Y \approx R\,A\,C^\top$. Because $A$ is a full matrix, the joint model also
+holds cross terms between widths, such as a row Gaussian of width 16 times a
+column Gaussian of width 1.5. These terms are axis-aligned anisotropic
+Gaussians, not Mobahi's isotropic ones. They still smooth in closed form, one
+axis at a time, but `gs.render` would need a width for each axis.
+
+A second option keeps the levels and repeats the coarse-to-fine pass
+(*backfitting*): each level is refitted to the residual of all the others.
+
+The cell below compares the three on `camera`. The penalty $\lambda$ scales
+with the largest singular value of the design matrix, which is larger for the
+joint basis, so the joint fit needs a smaller `RIDGE` to give the same
+residual.
+
+```{code-cell} ipython3
+def joint_fit(image, ridge):
+    """Fit all levels in one two-step ridge solve; return amplitudes, residual."""
+    rows = np.arange(image.shape[0], dtype=float)
+    cols = np.arange(image.shape[1], dtype=float)
+    R = np.hstack([gs.basis(rows, gs.grid_centres(len(rows), d), d) for d in gs.DELTAS])
+    C = np.hstack([gs.basis(cols, gs.grid_centres(len(cols), d), d) for d in gs.DELTAS])
+    A = gs.ridge_solve(C, gs.ridge_solve(R, image, ridge).T, ridge).T
+    return A, image - R @ A @ C.T
+
+
+def backfit_sweep(image, levels, residual, ridge=gs.RIDGE):
+    """Refit each level, coarse to fine, to the residual of all the others."""
+    rows = np.arange(image.shape[0], dtype=float)
+    cols = np.arange(image.shape[1], dtype=float)
+    new = []
+    for level in levels:
+        Rb = gs.basis(rows, level.row_centres, level.delta)
+        Cb = gs.basis(cols, level.col_centres, level.delta)
+        part = residual + Rb @ level.amplitudes @ Cb.T
+        A = gs.ridge_solve(Cb, gs.ridge_solve(Rb, part, ridge).T, ridge).T
+        residual = part - Rb @ A @ Cb.T
+        new.append(gs.Level(level.delta, level.row_centres, level.col_centres, A))
+    return new, residual
+
+
+image = PHOTOGRAPHS["camera"]
+levels, residual = FITS["camera"][0], FITS["camera"][2]
+
+
+def summary(method, ridge, amplitudes, residual):
+    return {
+        "fit": method,
+        "RIDGE": f"{ridge:.0e}",
+        "amplitudes": sum(a.size for a in amplitudes),
+        "max |a|": f"{max(np.abs(a).max() for a in amplitudes):.2f}",
+        "residual RMS / image RMS": f"{np.sqrt(np.mean(residual**2) / np.mean(image**2)):.2%}",
+    }
+
+
+order_rows = [summary("level by level", gs.RIDGE, [l.amplitudes for l in levels], residual)]
+refit, refit_residual = backfit_sweep(image, levels, residual)
+order_rows.append(summary("level by level, 2 passes", gs.RIDGE,
+                          [l.amplitudes for l in refit], refit_residual))
+lower, lower_residual = gs.fit(image, ridge=1e-4)
+order_rows.append(summary("level by level", 1e-4, [l.amplitudes for l in lower], lower_residual))
+for ridge in (1e-3, 1e-4, 1e-5):
+    A, joint_residual = joint_fit(image, ridge)
+    order_rows.append(summary("joint", ridge, [A], joint_residual))
+show_table(pd.DataFrame(order_rows))
+```
+
+The second pass leaves the residual as it was. The joint fit with the same
+`RIDGE` fits worse, because its penalty is larger. With `RIDGE` lowered to
+1e-5 it gives about the same residual as the level-by-level fit with 1e-4,
+with smaller amplitudes, but with more than three times as many of them. We
+keep the level-by-level fit, because each solve is small and every term
+stays isotropic.
 
 ## 4. Exact Hessian of the smoothed sum
 
