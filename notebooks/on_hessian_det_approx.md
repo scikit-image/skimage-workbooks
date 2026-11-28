@@ -14,7 +14,7 @@ https://github.com/scikit-image/scikit-image/issues/2488 | Notes that SIFT and S
 :::
 
 :::{changelog}
-2026-11-28 | claude-code:claude-opus-5-5 | Create workbook
+2026-11-28 | claude-code:claude-opus-5-5 | Create workbook; compare with mahotas; base the fix on the dlib port
 :::
 
 `hessian_matrix_det(image, sigma, approximate=True)` and `blob_doh` compute
@@ -65,6 +65,19 @@ import _skimage2.feature.blob as blob_module
 import gaussian_sum as gs
 
 print("scikit-image", ski.__version__)
+```
+
+One comparator runs here: mahotas, whose SURF code is a port of dlib's
+(§8). `pyramid` is a private function of mahotas, so this notebook may need
+changes when mahotas changes.
+
+```{code-cell} ipython3
+# Comparators.
+import mahotas
+from mahotas.features import _surf as mahotas_surf
+from mahotas.features.surf import integral as mahotas_integral
+
+print("mahotas", mahotas.__version__)
 ```
 
 ```{code-cell} ipython3
@@ -818,8 +831,8 @@ image", because "edge effects can yield anomolous results"
 returns a value at every pixel, so it must choose a border rule. Two fixes
 give a consistent rule:
 
-* zero outside the image, as OpenSURF's `BoxIntegral` does: §9.1 changes
-  `_integ` to do this, at no extra cost;
+* zero outside the image, `mode='constant'`: the fix of §9.1 clips each box
+  to the image before it sums it, at the cost of four comparisons per box;
 * pad the image once under a chosen `mode`, run the box filters, and crop, as
   `on_blob_dog.md` §8 proposes. This offers every `mode` of `hessian_matrix`.
   The pad must cover the reach of the filter, `size - (size - 1) // 2` pixels
@@ -1194,7 +1207,8 @@ at the SURF sizes. The fixed code keeps all five at every `sigma`.
 (sec-doh-comparators)=
 ## 8. Comparators
 
-Four other implementations of the SURF determinant, read from their source:
+Four other implementations of the SURF determinant. All four are read from
+their source, and §8.1 runs mahotas:
 
 * **OpenSURF** [@evans2009notes_opensurf]:
   [`fasthessian.cpp`](https://github.com/gussmith23/opensurf/blob/master/src/fasthessian.cpp).
@@ -1266,77 +1280,134 @@ size. At sizes 9 and 15 the boxes are the same, so there the difference comes
 from the weighting alone. The 0.81 weight belongs with one common weight for
 all boxes. This is a property of OpenCV, not of scikit-image.
 
+### 8.1 mahotas, run
+
+mahotas is the only one of the four whose determinant can be called from
+Python with a standard install. The PyPI wheels of OpenCV leave out SURF,
+which is in the `nonfree` module. dlib's Python bindings do not expose the
+Hessian pyramid, and OpenSURF has no Python bindings.
+
+`mahotas_surf.pyramid(integral, octaves, intervals, step)` returns, for each
+octave, one plane per interval. In octave 0 the lobe of interval $i$ is
+$2(i + 1) + 1$, and the step is one pixel. Each plane differs from the
+SURF determinant in three ways, all in `_surf.cpp`:
+
+* the weight of $D_{xy}^2$ is 0.36 ($0.6^2$), not 0.81;
+* a negative determinant becomes zero;
+* the result is multiplied by the sign of $D_{xx} + D_{yy}$.
+
+mahotas also leaves zero every pixel closer to the edge than
+$\lceil 3 (L_{\max} + 2) / 2 \rceil$, where $L_{\max}$ is the largest lobe
+it computes in the octave. Its `get_border_size` takes the lobe of one more
+interval than it computes. `mahotas_like` applies the same three changes to a layout, so the
+comparison is inside that margin. The image is noise on a frame that is not
+square, so that a swap of rows and columns would show:
+
+```{code-cell} ipython3
+def mahotas_like(image, layout):
+    """A layout's determinant with mahotas's weight, clamp and sign."""
+    dyy, dxy, dxx = (apply(image, boxes) for boxes in layout)
+    det = np.maximum(dxx * dyy - 0.36 * dxy**2, 0)
+    return np.where(dxx + dyy < 0, -1.0, 1.0) * det
+
+
+noise = rng.uniform(size=(96, 104))
+INTERVALS = 6
+planes = mahotas_surf.pyramid(mahotas_integral(noise.copy()), 1, INTERVALS, 1)[0]
+largest = 2 * INTERVALS + 1
+margin = int(np.ceil(3 * (largest + 2) / 2))  # get_border_size in _surf.cpp
+inner = (slice(margin, -margin),) * 2
+rows = []
+for i, plane in enumerate(planes):
+    lobe = 2 * (i + 1) + 1
+    row = {"lobe": lobe,
+           "mahotas zero outside the margin": bool(
+               np.all(plane[~np.pad(np.ones_like(plane[inner], bool), margin)] == 0))}
+    for name, layout in (("SURF layout", surf_layout(lobe)),
+                         ("current", skimage_layout(lobe))):
+        ref = mahotas_like(noise, layout)
+        row[f"max |mahotas − {name}| / max"] = (
+            np.abs(plane[inner] - ref[inner]).max() / np.abs(ref[inner]).max())
+    rows.append(row)
+show_table(pd.DataFrame(rows), floatfmt=".2g")
+```
+
+Inside the margin, mahotas agrees with `surf_layout` to rounding error at
+every lobe. It disagrees with the current layout of scikit-image at the
+same lobe, which is the layout of `surf_layout` moved by one pixel (§4.2).
+So an implementation that came from dlib, not from OpenSURF, has the same
+boxes as the fix of §9.1, centred on the same pixel. This checks the
+interior only: mahotas computes nothing near the edge, and so does not
+test the border (§4.6).
+
 ## 9. Ways forward
 
 (sec-doh-fix)=
 ### 9.1 The fix
 
-The fix changes three things in `_hessian_det_appx_pythran.py`:
+The fix replaces `_hessian_det_appx_pythran.py` with a port of dlib's
+`hessian_pyramid` (§8), under the Boost Software License. That is the code
+on the `surf-fixes` branch of scikit-image. Against the current code it
+changes three things:
 
-1. `_integ` subtracts one from each start index, as OpenSURF's `BoxIntegral`
-   does, and counts zeros outside the image instead of moving the corners.
-   It drops the `max(0.0, …)` clamp.
-2. The lobe is the odd integer nearest to `sigma`, and `size = 3 * lobe`.
-   This keeps the current scale of the SURF sizes (`lobe` 3 for `sigma` 3),
-   and so the `blob_doh` relation "radius ≈ `sigma`" (§4.4).
+1. Each box is named by its centre and its height and width, with dlib's
+   `centered_rect`, and summed with dlib's `get_sum_of_area`. The boxes are
+   then centred on the output pixel, which removes the shift of §4.2. The box
+   sum first clips the rectangle to the image, so pixels outside the image
+   count as zero (§4.6). There is no `max(0.0, …)` clamp (§4.5).
+2. The lobe is the odd integer nearest to `sigma`, and the filters are
+   `3 * lobe` wide. This keeps the current scale of the SURF sizes (`lobe` 3
+   for `sigma` 3), and so the `blob_doh` relation "radius ≈ `sigma`" (§4.4).
 3. The dead `size += 1` goes.
 
-As Python, in the form that Pythran compiles. The function takes the
-integral image, as now:
+The port differs from dlib in five ways: it computes one lobe from `sigma`,
+not a pyramid; it computes every pixel, where dlib leaves a border; it clips
+each box to the image, so pixels outside count as zero, where dlib requires
+the box to be inside the image; and it keeps the determinant as it is,
+without dlib's clamp of negative values to zero and without dlib's sign of
+the Laplacian. `on_surf_dlib_port.md`
+compares the port with dlib and OpenSURF call by call.
+
+The port is plain Python, in the form that Pythran compiles. This notebook
+loads it from `hessian_det_appx_dlib_port.py`, a copy of the branch file,
+and checks the copy by its hash:
 
 ```{code-cell} ipython3
-def _integ_fixed(img, r, c, rl, cl):
-    """Sum over rows r .. r+rl-1 and columns c .. c+cl-1; zero outside."""
-    r1 = min(r, img.shape[0]) - 1
-    c1 = min(c, img.shape[1]) - 1
-    r2 = min(r + rl, img.shape[0]) - 1
-    c2 = min(c + cl, img.shape[1]) - 1
-    a = img[r1, c1] if r1 >= 0 and c1 >= 0 else 0.0
-    b = img[r1, c2] if r1 >= 0 and c2 >= 0 else 0.0
-    d = img[r2, c1] if r2 >= 0 and c1 >= 0 else 0.0
-    e = img[r2, c2] if r2 >= 0 and c2 >= 0 else 0.0
-    return a - b - d + e
+import hashlib
+import inspect
+import pathlib
 
-
-def _hessian_matrix_det_fixed(img, sigma):
-    """SURF determinant of Hessian from the integral image `img`."""
-    lobe = 2 * int(sigma / 2) + 1  # odd, nearest to sigma
-    size = 3 * lobe
-    border = (size - 1) // 2
-    half = lobe // 2
-    w_i = 1.0 / size / size
-    height, width = img.shape
-    out = np.empty_like(img, dtype=np.float64)
-    for r in range(height):
-        for c in range(width):
-            dxx = (_integ_fixed(img, r - lobe + 1, c - border, 2 * lobe - 1, size)
-                   - 3 * _integ_fixed(img, r - lobe + 1, c - half, 2 * lobe - 1, lobe))
-            dyy = (_integ_fixed(img, r - border, c - lobe + 1, size, 2 * lobe - 1)
-                   - 3 * _integ_fixed(img, r - half, c - lobe + 1, lobe, 2 * lobe - 1))
-            dxy = (_integ_fixed(img, r - lobe, c + 1, lobe, lobe)
-                   + _integ_fixed(img, r + 1, c - lobe, lobe, lobe)
-                   - _integ_fixed(img, r - lobe, c - lobe, lobe, lobe)
-                   - _integ_fixed(img, r + 1, c + 1, lobe, lobe))
-            out[r, c] = (dxx * dyy - 0.81 * dxy * dxy) * w_i * w_i
-    return out
+PORT_SOURCE = pathlib.Path("hessian_det_appx_dlib_port.py").read_text()
+assert hashlib.sha256(PORT_SOURCE.encode()).hexdigest() == (
+    "9c151e192f48378494b432cd6ef26c27e14216469466ac05ce151c71147c6b58")
+port = {"__name__": "port"}
+exec(compile(PORT_SOURCE, "hessian_det_appx_dlib_port.py", "exec"), port)
 ```
 
-It must match `surf_det`, at every pixel including the border, on an image
-with negative values:
+The box functions, as dlib's `centered_rect` and `get_sum_of_area`:
+
+```{code-cell} ipython3
+for name in ("_centered_rect", "_sum_of_area"):
+    print(inspect.getsource(port[name]))
+```
+
+`_hessian_matrix_det` takes the integral image, as the current code does. It
+must match `surf_det`, at every pixel including the border, on an image with
+negative values:
 
 ```{code-cell} ipython3
 signed = rng.normal(size=(40, 48))
 integral = ski.transform.integral_image(signed)
 for sigma in (0.5, 1, 2.5, 3, 4.2, 7):
-    loop = _hessian_matrix_det_fixed(integral, sigma)
+    loop = port["_hessian_matrix_det"](integral, sigma)
     vector = surf_det(signed, sigma)
     print(f"sigma {sigma}: lobe {lobe_for(sigma)}, max difference / max value "
           f"{np.abs(loop - vector).max() / np.abs(vector).max():.1e}")
 ```
 
-The loop does the same number of look-ups per pixel as the current code, plus
-four comparisons in each `_integ_fixed`. This notebook does not build the
-Pythran module, so it does not time the fix.
+The loop does the same number of box sums per pixel as the current code,
+eight. Each box sum adds four comparisons to clip the rectangle. This
+notebook does not build the Pythran module, so it does not time the fix.
 
 The odd lobes make the scale axis coarser: a step of 2 in `sigma` per lobe.
 `blob_doh` must therefore compute each lobe once and report the lobe as the
@@ -1480,9 +1551,9 @@ notebook does not examine the patent.
 
 #### Consequences for the fix
 
-The fix of §9.1 keeps the structure of OpenSURF, and the author of this
-notebook read the OpenSURF source. It does not settle the question. Two ways
-to settle it:
+An earlier version of the fix in §9.1 kept the structure of OpenSURF, and the
+author of this notebook read the OpenSURF source. Two ways to settle the
+question:
 
 * a rewrite from the papers only, by someone who has not read the OpenSURF
   source, stated as such in the PR. `surf_layout` gives the filters as boxes
@@ -1491,6 +1562,16 @@ to settle it:
   tests of §7;
 * a port of the dlib layout, under the Boost Software License, with dlib
   named in `LICENSE.txt`, as the developer guide asks.
+
+The `surf-fixes` branch of scikit-image, and §9.1 now, take the second way.
+`on_surf_dlib_port.md` shows that the port makes dlib's box calls, in
+dlib's order, and keeps none of the forms of the OpenSURF code. Its author
+had read the OpenSURF source, so it is a port of dlib, not a clean-room
+implementation. Four of its five changes from dlib give OpenSURF's
+behaviour: every pixel computed, zero outside the image, no clamp of the
+determinant, and no sign of the Laplacian (`on_surf_dlib_port.md` §8).
+These keep what `hessian_matrix_det` already returns, a signed determinant
+at every pixel.
 
 ## 10. What each fix costs
 

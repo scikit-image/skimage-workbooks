@@ -20,6 +20,7 @@ dependencies:
   - cython
   - diplib
   - itk-filtering
+  - mahotas
   - pip
   - pip:
       - "scikit-image@git+https://github.com/scikit-image/scikit-image@main"

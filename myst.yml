@@ -8,6 +8,8 @@ project:
   github: https://github.com/scikit-image/skimage-workbooks
   toc:
     - file: index.md
+    - file: notebooks/on_surf_dlib_port.md
+    - file: notebook/on_hessian_det_timings.md
     - file: notebooks/on_pyramid_laplacian.md
     - file: notebooks/on_hessian.md
     - file: notebooks/on_hessian_filter.md
@@ -17,6 +19,8 @@ project:
     - file: notebooks/on_gaussian_sum_images.md
     - file: notebooks/on_shape_index.md
     - file: notebooks/on_hessian_det_approx.md
+    - file: notebooks/on_surf_dlib_port.md
+    - file: notebooks/on_hessian_det_timings.md
     - file: notebooks/on_blob_doh_alternatives.md
     - file: notebooks/on_blob_dog.md
     - file: notebooks/on_frangi.md
