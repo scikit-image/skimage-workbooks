@@ -9,7 +9,7 @@ kernelspec:
 
 :::{changelog}
 2026-11-28 | opencode:grok-4.7 | Create workbook: the formula, its accuracy, and the timings
-2026-11-28 | opencode:deepseek-v4.1-flash-free | Add the range of formula differences on three photographs
+2026-11-28 | opencode:deepseek-v4.1-flash-free | Add the range of formula differences on three photographs, against the peak and against each pixel's determinant
 :::
 
 `hessian_matrix_det` builds a full matrix at every pixel and calls
@@ -761,7 +761,7 @@ greyscale `astronaut`. `sigma` is 1, 2, 4 and 8.
 
 ```{code-cell} ipython3
 def formula_gap(image, sigma):
-    """Closed form, its difference from `np.linalg.det`, and the interior mask."""
+    """Closed form, `np.linalg.det`, their difference, and the interior mask."""
     elems = hessian_matrix(image, sigma=sigma, use_gaussian_derivatives=False)
     closed = np.asarray(closed_det(elems), dtype=np.float64)
     linear = np.linalg.det(_symmetric_image(elems))
@@ -769,7 +769,7 @@ def formula_gap(image, sigma):
     reach = int(8 * sigma + 0.5) + 1
     inner = np.zeros(image.shape, dtype=bool)
     inner[reach:-reach, reach:-reach] = True
-    return closed, diff, inner
+    return closed, linear, diff, inner
 
 
 PHOTO_SIGMAS = (1, 2, 4, 8)
@@ -785,14 +785,17 @@ print({name: image.shape for name, image in photographs.items()})
 photo_rows = []
 for name, image in photographs.items():
     for sigma in PHOTO_SIGMAS:
-        closed, diff, inner = formula_gap(image, sigma)
+        closed, linear, diff, inner = formula_gap(image, sigma)
         peak = np.max(np.abs(closed))
         space = np.spacing(np.where(closed == 0, np.finfo(float).tiny, closed))
         ulps = np.abs(diff) / space
         for region, sel in (("interior", inner), ("border", ~inner)):
-            dd, uu, cc = diff[sel], ulps[sel], closed[sel]
+            dd, uu, cc, ll = diff[sel], ulps[sel], closed[sel], linear[sel]
             above_1e6 = np.abs(cc) > 1e-6 * peak
             above_1e3 = np.abs(cc) > 1e-3 * peak
+            zero = ll == 0
+            den = np.abs(ll[~zero])
+            ratio = np.abs(dd[~zero]) / den
             photo_rows.append({
                 "image": name,
                 "sigma": sigma,
@@ -806,6 +809,20 @@ for name, image in photographs.items():
                 "max ulps": uu.max(),
                 "max ulps, abs det > 1e-6 peak": uu[above_1e6].max(),
                 "max ulps, abs det > 1e-3 peak": uu[above_1e3].max(),
+                "zero determinants": int(zero.sum()),
+                "max abs diff at zero determinants": (
+                    np.max(np.abs(dd[zero])) if zero.any() else 0.0
+                ),
+                "peak ratio": np.max(ratio, initial=0.0),
+                "det / peak at peak ratio": den[np.argmax(ratio)] / peak,
+                "peak ratio, det > 1e-6 peak": np.max(
+                    ratio[den > 1e-6 * peak], initial=0.0
+                ),
+                "peak ratio, det > 1e-3 peak": np.max(
+                    ratio[den > 1e-3 * peak], initial=0.0
+                ),
+                "median ratio": np.median(ratio),
+                "p99 ratio": np.percentile(ratio, 99),
             })
 photo_gaps = pd.DataFrame(photo_rows)
 interior_gaps = photo_gaps[photo_gaps.region == "interior"]
@@ -907,6 +924,56 @@ The relative gap lies between $3.7 \times 10^{-16}$ and $1.5 \times 10^{-15}$.
 It rises by a factor of 2.5 to 3.5 from `sigma` 1 to `sigma` 8, and at a fixed
 `sigma` the three images are within a factor of two of each other.
 
+### Relative to each pixel's determinant
+
+The relative gap above divides by the image-wide peak. Dividing by each
+pixel's own `np.linalg.det` gives a larger peak, because the denominator can
+be close to zero. Where `np.linalg.det` is exactly zero the ratio is
+undefined; the closed form is also exactly zero at those pixels, so they are
+left out.
+
+```{code-cell} ipython3
+ratio_gaps = photo_gaps[photo_gaps.region == "interior"]
+per_image_ratio = ratio_gaps.loc[ratio_gaps.groupby("image")["peak ratio"].idxmax()]
+per_image_ratio["image"] = pd.Categorical(
+    per_image_ratio["image"], list(photographs), ordered=True
+)
+per_image_ratio = per_image_ratio.sort_values("image")
+show_table(
+    per_image_ratio[["image", "sigma", "peak ratio",
+                     "det / peak at peak ratio"]],
+    index=False,
+    floatfmt=".3e",
+)
+```
+
+The absolute peak is at `sigma` 1 on every image: $5.2 \times 10^{-18}$ on
+`camera`, $4.3 \times 10^{-18}$ on `coins`, and $8.7 \times 10^{-18}$ on
+`astronaut`. The per-pixel relative peak is $4.0 \times 10^{-10}$ on `camera`
+at `sigma` 1, $5.7 \times 10^{-11}$ on `coins` at `sigma` 4, and
+$2.9 \times 10^{-11}$ on `astronaut` at `sigma` 4. At each of those pixels the determinant is only
+$5.3 \times 10^{-12}$ to $5.6 \times 10^{-9}$ of the image peak, so the ratio
+is dominated by the small denominator.
+
+```{code-cell} ipython3
+show_table(
+    ratio_gaps[["image", "sigma", "zero determinants",
+                "max abs diff at zero determinants",
+                "peak ratio, det > 1e-6 peak",
+                "peak ratio, det > 1e-3 peak",
+                "median ratio", "p99 ratio"]],
+    floatfmt=".3e",
+)
+```
+
+`astronaut` has exact zero determinants at `sigma` 1, 2 and 4; the closed form
+is also zero there, so those pixels are left out. Conditioning on the
+determinant brings the peak down: above $10^{-6}$ of the peak it is at most
+$6.9 \times 10^{-12}$, and above $10^{-3}$ of the peak at most
+$5.5 \times 10^{-14}$. The bulk of pixels is a few ulps: the median ratio is
+$5 \times 10^{-16}$ to $9 \times 10^{-16}$, and the 99th percentile
+$2.8 \times 10^{-15}$ to $4.7 \times 10^{-15}$.
+
 ## 12. Summary
 
 ```{code-cell} ipython3
@@ -931,6 +998,10 @@ summary = pd.DataFrame([
      "result": f"{full_times.loc[full_times.order == 3, 'hessian_matrix_det / replacement'].iloc[0]:.3g}"},
     {"question": "three photographs, max abs diff / peak",
      "result": f"{rel.min():.3g} to {rel.max():.3g}"},
+    {"question": "three photographs, peak |diff| / |det|",
+     "result": f"{ratio_gaps['peak ratio'].max():.3g}"},
+    {"question": "three photographs, peak |diff| / |det|, det > 1e-3 peak",
+     "result": f"{ratio_gaps['peak ratio, det > 1e-3 peak'].max():.3g}"},
 ])
 show_table(summary)
 ```
@@ -960,7 +1031,10 @@ at `sigma` 1. The full call keeps the cost of `hessian_matrix`.
   `sigma` 1.
 * The photograph comparison is `camera`, `coins`, and greyscale `astronaut`,
   at `sigma` 1, 2, 4 and 8. The Hessian is the finite-difference Hessian.
-  The two formulas are not compared on a 3D image.
+  The relative gap is reported both against the image peak and against each
+  pixel's determinant. The two formulas are not compared on a 3D image.
+* The per-pixel relative ratio leaves out pixels where `np.linalg.det` is
+  exactly zero; the closed form is also zero there.
 * There is no 4D formula here. Above 3D, `np.linalg.det` remains the path.
 * The installed scikit-image is the one printed in §1. The source that was
   read is `hessian-refactor` at `060a313d1`.
