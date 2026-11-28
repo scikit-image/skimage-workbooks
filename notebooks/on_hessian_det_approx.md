@@ -14,7 +14,7 @@ https://github.com/scikit-image/scikit-image/issues/2488 | Notes that SIFT and S
 :::
 
 :::{changelog}
-2026-11-27 | claude-code:claude-opus-5-5 | Create workbook
+2026-11-28 | claude-code:claude-opus-5-5 | Create workbook
 :::
 
 `hessian_matrix_det(image, sigma, approximate=True)` and `blob_doh` compute
@@ -1623,6 +1623,77 @@ radius.
   image gives a determinant near zero at `sigma` 5. It does not depend on the
   layout.
 
+(sec-doh-usage)=
+### 10.5 Who calls the box route
+
+A fix changes the output for every caller of the box route (§10.4). This
+section records who those callers are, outside scikit-image. It is a record
+of a search on 2026-11-28, not a computation, so no cell re-derives it.
+
+The search was GitHub code search for `hessian_matrix_det`, split by file
+size and type so that each query returned fewer than 1000 results. It found
+2523 files. Of these, 2381 were copies of scikit-image itself (paths under
+`skimage/`, `site-packages/` and the like), type stubs, documentation, HTML
+and packaging files. The other 142 Python files and notebooks were fetched
+and their calls parsed. A call uses the box route when it passes
+`approximate=True`, or when it does not pass `approximate`, because `True`
+is the default.
+
+Calls of the public `hessian_matrix_det` that use the box route:
+
+| repository | files | calls | `approximate` | `sigma` |
+| --- | --- | --- | --- | --- |
+| [Cocopyth/AMFtrack](https://github.com/Cocopyth/AMFtrack/blob/d613e7e7f0410cb7a5256a962f6a52aaa9d39a13/amftrack/pipeline/functions/image_processing/extract_skel.py) | 4 (1 module, 3 notebooks) | 5 | default | 15, 20 |
+| [Cocopyth/AMFTravellingWave](https://github.com/Cocopyth/AMFTravellingWave/blob/1fe7dc3062e0157812665a6fe335527afb7b6eb0/amftrack/pipeline/functions/image_processing/extract_skel.py) | 1 | 1 | default | 20 |
+| [TTPO100AJIEX/CVTDA](https://github.com/TTPO100AJIEX/CVTDA/blob/24649e23af84ce318b019fbd895eb7d09e0610bf/experiments/cifar10_dataset/14__experiment.ipynb) | 2 notebooks | 3 | default | default, 1 |
+| [nonplayer47361/opencv_tuning](https://github.com/nonplayer47361/opencv_tuning/blob/0e57d684ffef838667ed7789f53f675729dc8f35/src/bayesian_optimizer.py) | 2 | 2 | default | a tuned parameter, default 1.0 |
+| [Richard-Yan-UCB/datasci281_final_project](https://github.com/Richard-Yan-UCB/datasci281_final_project/blob/6bcba89df30952a75ec65501f9b445e5e44d7a8f/utils.py) | 1 | 2 | default | variables |
+| [paulhfu/RLForSeg](https://github.com/paulhfu/RLForSeg/blob/4ff4b830357b97d5e7f3839f6540552cbad11046/utils/affinities.py) | 1 | 1 | default | a variable |
+| [DrThiruCSomasundaram/PhDdataanalysis](https://github.com/DrThiruCSomasundaram/PhDdataanalysis/blob/66b8d2353032bb4be738f9139ce65e2dbb95d4a5/Image%20editor.py) | 1 | 1 | default | 1 |
+| [missingbulb/RaunTruth](https://github.com/missingbulb/RaunTruth/blob/603c2d63e82fbd0a4e8522e2fc3eaeb5ccb77193/dev/tools/trick_pool/tricks.py) | 1 | 1 | default | `max(0.5, ...)` |
+| [sdfunni/SingleOrigin](https://github.com/sdfunni/SingleOrigin/blob/38540b0188ca5b44947e79fe0ffdb3bd002892cf/SingleOrigin/utils/peakfit.py) | 1 | 1 | default | a loop variable |
+| [saumy-github/mirra-mvp](https://github.com/saumy-github/mirra-mvp/blob/1655249e9eb8f7dc68de02efad22b33ca2c52b7c/product_ingestion/cv_shape.py) | 1 | 1 | default | 2.0 |
+| [jaaumeadrover/BSc-Computer-Science-UIB](https://github.com/jaaumeadrover/BSc-Computer-Science-UIB/blob/8ece4d4e44095f294056b47a50e9fa5332b90e08/04_year/03_deep_learning/assignments/landscape_img_classification/testing/hessian_matrix_det.ipynb) | 1 notebook | 1 | `True`, in a parameter dict | 1 |
+
+That is 19 calls in 16 files of 11 repositories, from 10 owners. Only one
+call states `approximate=True`; the others take the default. One call
+outside scikit-image passes `approximate=False`
+([furuse-kazufumi/fullseye](https://github.com/furuse-kazufumi/fullseye/blob/7fa652573fb95d8ef053f8bccd9554c372720ab2/backends.py)).
+Several callers use `sigma` of 1 or 2, where the box filters are least
+accurate (§4.3, §4.7). The RaunTruth call can pass `sigma` 0.5, where the
+current code returns zeros (§4.7).
+
+Three projects call the private `_hessian_matrix_det` directly, to build a
+cube of their own as `blob_doh` does:
+
+* [EPFL-VILAB/omnidata](https://github.com/EPFL-VILAB/omnidata/blob/f69ff3aedf983cb34c490a0afd0d29fdd83f6a1c/omnidata_annotator/scripts/create_keypoints_2d_images.py),
+  `create_keypoints_2d_images.py`. The same file is in four other
+  repositories that copy omnidata.
+* [BMCV/SuperDSM](https://github.com/BMCV/SuperDSM/blob/f92eb57eddd8ed14e5372e1d243d67998ddb6046/superdsm/pipeline.py),
+  `pipeline.py`, as `skimage.feature.blob._hessian_matrix_det`.
+* [mKamiAsim/pixelnexus](https://github.com/mKamiAsim/pixelnexus/blob/533823cd355135485b87922979b030c73fd52f2b/engine/src/pixelnexus_engine/filters/blobs.py),
+  `filters/blobs.py`.
+
+These callers see the fix too, and a change to the private name or its
+arguments breaks them.
+
+The count leaves out:
+
+* the scikit-image benchmark, and copies of it and of `test_corner.py` in
+  other repositories;
+* a fork of scikit-image (bipxx/scikit-imagexx);
+* five repositories that call `_hessian_matrix_det` only from a copy of the
+  scikit-image `blob.py`;
+* 97 files that name `hessian_matrix_det` without calling it, in imports,
+  lists of names or text; 86 of them are in the two Cocopyth repositories;
+* one notebook that shows only the traceback of a `blob_doh` call.
+
+The counts are a lower bound. GitHub code search is incomplete: the totals
+it reported for one query changed while the results were being read, from
+342 to 416 files and from 533 to 778 files in two size bands. It searches
+default branches, and it leaves out most forks. The search does not cover
+callers of `blob_doh`, which use the box route through it.
+
 ## 11. What not to do
 
 * **Do not replace the box route with `approximate=False` inside
@@ -1689,3 +1760,5 @@ code, with no attribution and no record of a licence check (§9.3).
   time it.
 * `blob_doh` is tested on the disks of its own test and on `coins` with
   default parameters.
+* The count of callers in §10.5 comes from one GitHub code search, which is
+  incomplete, and does not cover callers of `blob_doh`.
